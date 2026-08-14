@@ -1,5 +1,4 @@
-@import "tailwindcss";
-
+/* 大会会場でも読みやすいよう、白背景・高コントラストを基本にしています。 */
 :root { --ink:#090a0c; --panel:#111318; --line:#292d35; --muted:#89909d; --gold:#ffd527; --orange:#ff6b20; --cyan:#52e8ff; --white:#f7f7f4; }
 * { box-sizing:border-box; }
 html { background:var(--ink); color:var(--white); }
@@ -44,3 +43,8 @@ body { background:linear-gradient(180deg,#ffffff 0,#f5f7fa 460px); color:#172033
 .error{background:#fff1f2;border-color:#f3b8bf;color:#9b2635}
 @media (max-width:1000px){.tournament-switcher select{min-width:190px}.topbar{align-items:center}.header-actions button{font-size:12px;padding:10px}}
 @media (max-width:700px){.topbar{height:auto;min-height:64px;flex-wrap:wrap;gap:9px}.header-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}.tournament-switcher{grid-column:1/3}.tournament-switcher select{width:100%;min-width:0}.header-actions .primary,.header-actions .secondary{display:block;font-size:12px;width:auto;height:38px;padding:0 12px}.topbar .primary:first-letter{font-size:inherit}.hero{padding-top:35px}.hero h1{font-size:42px}.hero h1 span{font-size:.38em}.metrics{padding-left:18px;padding-right:18px}.ranking-row{font-size:13px}}
+
+.auth-button{height:38px;padding:0 12px;border:1px solid #cbd2dc;border-radius:8px;background:#fff;color:#344054;font-size:12px;font-weight:700}.auth-button:hover{background:#f5f7fa}
+.viewer-banner{max-width:1288px;margin:16px auto 0;padding:12px 16px;display:flex;align-items:center;gap:12px;border:1px solid #b8d4ea;border-radius:9px;background:#eef7ff;color:#36546b;font-size:13px}.viewer-banner strong{color:#153b59}.viewer-banner button{margin-left:auto;border:0;border-radius:7px;background:#1e5f8a;color:#fff;padding:8px 12px;font-weight:700}
+@media (max-width:1000px){.header-actions{flex-wrap:wrap}.auth-button{font-size:11px;padding:0 9px}}
+@media (max-width:700px){.header-actions{grid-template-columns:1fr 1fr}.auth-button{grid-column:1/3;width:100%}.viewer-banner{margin-left:18px;margin-right:18px;align-items:flex-start;flex-wrap:wrap}.viewer-banner button{margin-left:0}}

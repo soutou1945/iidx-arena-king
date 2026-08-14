@@ -1,21 +1,20 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import type { User } from "@supabase/supabase-js";
+import { loadTournament, mutateTournament } from "../src/data/tournamentRepository";
+import { isSupabaseConfigured, supabase } from "../src/lib/supabase";
+import { emptyTournamentData, type MutationPayload, type Participant, type Stage, type TournamentData } from "../src/types";
 
-type Stage = "preliminary" | "king" | "middle" | "reverse";
-type Participant = { id: number; name: string; createdAt: string };
-type Match = { id: number; stage: Stage; roundNumber: number; createdAt: string };
-type Result = { id: number; matchId: number; participantId: number; points: number; placement: number; selectedChart: string };
-type Tournament = { id: number; name: string; eventDate: string; createdAt: string };
-type TournamentData = { tournaments: Tournament[]; tournament: Tournament | null; participants: Participant[]; matches: Match[]; results: Result[] };
 type Standing = Participant & { points: number; games: number; firsts: number; fourths: number; directPoints: number };
 type DraftRow = { participantId: string; points: string; placement: string; selectedChart: string };
 
-const emptyData: TournamentData = { tournaments: [], tournament: null, participants: [], matches: [], results: [] };
 const stageLabels: Record<Stage, string> = { preliminary: "予選", king: "王決定戦", middle: "中位決定戦", reverse: "逆王決定戦" };
 const initialRows: DraftRow[] = [1, 2, 3, 4].map((placement) => ({ participantId: "", points: "", placement: String(placement), selectedChart: "" }));
 
+/** 予選結果から大会ルールに沿った順位表を生成します。 */
 function preliminaryStandings(data: TournamentData): Standing[] {
+  // 予選以外の順位決定戦は、予選ランキングの集計対象から除外します。
   const prelimIds = new Set(data.matches.filter((match) => match.stage === "preliminary").map((match) => match.id));
   const prelimResults = data.results.filter((result) => prelimIds.has(result.matchId));
   const base = data.participants.map((participant) => {
@@ -40,9 +39,11 @@ function preliminaryStandings(data: TournamentData): Standing[] {
     row.directPoints = prelimResults.filter((result) => result.participantId === row.id && sharedMatchIds.has(result.matchId)).reduce((sum, result) => sum + result.points, 0);
   });
 
+  // 大会ルールどおり、合計pt→1位数→4位数→直接対決ptの順で比較します。
   return base.sort((a, b) => b.points - a.points || b.firsts - a.firsts || a.fourths - b.fourths || b.directPoints - a.directPoints || a.id - b.id);
 }
 
+/** 各順位決定戦を集計し、同点時は予選上位者を優先します。 */
 function groupFinalStandings(stage: Stage, data: TournamentData, prelim: Standing[]) {
   const stageMatchIds = new Set(data.matches.filter((match) => match.stage === stage).map((match) => match.id));
   const finalResults = data.results.filter((result) => stageMatchIds.has(result.matchId));
@@ -53,8 +54,9 @@ function groupFinalStandings(stage: Stage, data: TournamentData, prelim: Standin
   })).sort((a, b) => b.finalPoints - a.finalPoints || prelim.findIndex((row) => row.id === a.id) - prelim.findIndex((row) => row.id === b.id));
 }
 
+/** 大会運営・公開順位表をまとめたメイン画面です。 */
 export default function TournamentApp() {
-  const [data, setData] = useState<TournamentData>(emptyData);
+  const [data, setData] = useState<TournamentData>(emptyTournamentData);
   const [tab, setTab] = useState<"standings" | "matches" | "players" | "rules">("standings");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -66,15 +68,16 @@ export default function TournamentApp() {
   const [eventDate, setEventDate] = useState("");
   const [stage, setStage] = useState<Stage>("preliminary");
   const [rows, setRows] = useState<DraftRow[]>(initialRows);
+  const [user, setUser] = useState<User | null>(null);
+  const [showLoginForm, setShowLoginForm] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
 
+  /** 指定した大会をSupabaseから読み込み、画面全体を更新します。 */
   async function load(tournamentId?: number) {
     try {
       setLoading(true);
-      const query = tournamentId ? `?tournamentId=${tournamentId}` : "";
-      const response = await fetch(`/api/tournament${query}`, { cache: "no-store" });
-      const json = await response.json() as TournamentData & { error?: string };
-      if (!response.ok) throw new Error(json.error ?? "大会データを読み込めませんでした。");
-      setData(json);
+      setData(await loadTournament(tournamentId));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "大会データを読み込めませんでした。");
     } finally { setLoading(false); }
@@ -85,13 +88,25 @@ export default function TournamentApp() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  async function mutate(payload: object) {
+  useEffect(() => {
+    if (!supabase) return;
+
+    // 初回表示時のセッションと、その後のログイン・ログアウトを画面へ反映します。
+    void supabase.auth.getSession().then(({ data: sessionData }) => {
+      setUser(sessionData.session?.user ?? null);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  /** ログイン状態を確認してから更新処理を実行します。 */
+  async function mutate(payload: MutationPayload) {
     setBusy(true); setError("");
     try {
-      const response = await fetch("/api/tournament", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, tournamentId: data.tournament?.id }) });
-      const json = await response.json() as TournamentData & { error?: string };
-      if (!response.ok) throw new Error(json.error ?? "保存に失敗しました。");
-      setData(json);
+      if (!user) throw new Error("データを更新するには運営ログインが必要です。");
+      setData(await mutateTournament(payload, data.tournament?.id));
       return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "保存に失敗しました。");
@@ -105,11 +120,33 @@ export default function TournamentApp() {
   const finalsReady = data.participants.length === 12 && completedPlayers === 12;
   const isPastTournament = Boolean(data.tournament && data.tournaments[0] && data.tournament.id !== data.tournaments[0].id);
 
+  /** Supabase Authのメールアドレス・パスワードで運営者としてログインします。 */
+  async function login(event: FormEvent) {
+    event.preventDefault();
+    if (!supabase) return;
+    setBusy(true); setError("");
+    const { error: loginError } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPassword });
+    setBusy(false);
+    if (loginError) {
+      setError("ログインできませんでした。メールアドレスとパスワードを確認してください。");
+      return;
+    }
+    setLoginPassword("");
+    setShowLoginForm(false);
+  }
+
+  async function logout() {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+  }
+
+  /** 参加者追加フォームの送信処理です。 */
   async function addParticipant(event: FormEvent) {
     event.preventDefault();
     if (await mutate({ action: "addParticipant", name })) setName("");
   }
 
+  /** 新しい大会を作成し、作成直後の大会へ表示を切り替えます。 */
   async function createTournament(event: FormEvent) {
     event.preventDefault();
     const ok = await mutate({ action: "createTournament", tournamentName, eventDate });
@@ -121,6 +158,7 @@ export default function TournamentApp() {
     }
   }
 
+  /** 4人分の入力値をまとめて試合登録RPCへ渡します。 */
   async function saveMatch(event: FormEvent) {
     event.preventDefault();
     const ok = await mutate({
@@ -130,6 +168,7 @@ export default function TournamentApp() {
     if (ok) { setRows(initialRows); setShowMatchForm(false); setTab("standings"); }
   }
 
+  /** 試合入力表のうち、変更された1セルだけを更新します。 */
   function updateRow(index: number, field: keyof DraftRow, value: string) {
     setRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row));
   }
@@ -142,8 +181,11 @@ export default function TournamentApp() {
         <div className="brand"><span className="brand-mark">王</span><div><strong>ARENA CROWN</strong><small>IIDX LOCAL TOURNAMENT</small></div></div>
         <div className="header-actions">
           <label className="tournament-switcher"><span>大会を切り替える</span><select value={data.tournament?.id ?? ""} onChange={(event) => { void load(Number(event.target.value)); }} aria-label="表示する大会"><option value="" disabled>大会を選択</option>{data.tournaments.map((item) => <option key={item.id} value={item.id}>{item.name}{item.eventDate ? `（${item.eventDate}）` : ""}</option>)}</select></label>
-          <button className="secondary compact" onClick={() => setShowTournamentForm(true)}>＋ 新しい大会</button>
-          <button className="primary compact" onClick={() => setShowMatchForm(true)} disabled={data.participants.length < 4}>＋ 試合結果</button>
+          <button className="secondary compact" onClick={() => user ? setShowTournamentForm(true) : setShowLoginForm(true)}>＋ 新しい大会</button>
+          <button className="primary compact" onClick={() => user ? setShowMatchForm(true) : setShowLoginForm(true)} disabled={data.participants.length < 4}>＋ 試合結果</button>
+          {user
+            ? <button className="auth-button" onClick={() => { void logout(); }} title={user.email}>ログアウト</button>
+            : <button className="auth-button" onClick={() => setShowLoginForm(true)}>運営ログイン</button>}
         </div>
       </header>
 
@@ -169,6 +211,8 @@ export default function TournamentApp() {
       </section>
 
       {error && <div className="error"><span>!</span>{error}<button onClick={() => setError("")}>×</button></div>}
+      {!isSupabaseConfigured && <div className="error"><span>!</span>Supabaseの接続情報が未設定です。READMEの手順に従って環境変数を設定してください。</div>}
+      {isSupabaseConfigured && !user && <div className="viewer-banner"><strong>閲覧モード</strong><span>順位と試合結果は閲覧できます。登録・編集は運営ログイン後に利用できます。</span><button onClick={() => setShowLoginForm(true)}>運営ログイン</button></div>}
 
       <nav className="tabs" aria-label="大会メニュー">
         <button className={tab === "standings" ? "active" : ""} onClick={() => setTab("standings")}>順位表</button>
@@ -204,19 +248,19 @@ export default function TournamentApp() {
         </section>}
 
         {!loading && tab === "matches" && <section>
-          <div className="section-heading"><div><p className="eyebrow">MATCH LOG</p><h2>試合履歴</h2></div><button className="primary" onClick={() => setShowMatchForm(true)} disabled={data.participants.length < 4}>＋ 新しい試合</button></div>
+          <div className="section-heading"><div><p className="eyebrow">MATCH LOG</p><h2>試合履歴</h2></div><button className="primary" onClick={() => user ? setShowMatchForm(true) : setShowLoginForm(true)} disabled={data.participants.length < 4}>＋ 新しい試合</button></div>
           {data.matches.length === 0 ? <Empty title="まだ試合結果はありません" copy="4名の参加者を選び、順位と獲得ptを登録します。" /> : <div className="match-list">{[...data.matches].reverse().map((match) => <article key={match.id}>
-            <div className="match-title"><span>{stageLabels[match.stage]} #{match.roundNumber}</span><button className="icon-button" onClick={() => { if (confirm("この試合結果を削除しますか？")) void mutate({ action: "deleteMatch", matchId: match.id }); }}>削除</button></div>
+            <div className="match-title"><span>{stageLabels[match.stage]} #{match.roundNumber}</span>{user && <button className="icon-button" onClick={() => { if (confirm("この試合結果を削除しますか？")) void mutate({ action: "deleteMatch", matchId: match.id }); }}>削除</button>}</div>
             <div className="match-results">{data.results.filter((result) => result.matchId === match.id).sort((a, b) => a.placement - b.placement).map((result) => <div key={result.id}><b>{result.placement}</b><span>{data.participants.find((player) => player.id === result.participantId)?.name}</span><small>{result.selectedChart || "選曲未記録"}</small><strong>{result.points} pt</strong></div>)}</div>
           </article>)}</div>}
         </section>}
 
         {!loading && tab === "players" && <section>
           <div className="section-heading"><div><p className="eyebrow">PLAYER ENTRY</p><h2>参加者登録</h2></div><span className="capacity">{data.participants.length} / 12</span></div>
-          <form className="entry-form" onSubmit={addParticipant}><label><span>プレイヤー名</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="DJ NAME" maxLength={30} disabled={data.participants.length >= 12} /></label><button className="primary" disabled={busy || data.participants.length >= 12}>参加者を追加</button></form>
+          <form className="entry-form" onSubmit={addParticipant}><label><span>プレイヤー名</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="DJ NAME" maxLength={30} disabled={!user || data.participants.length >= 12} /></label><button className="primary" disabled={!user || busy || data.participants.length >= 12}>参加者を追加</button></form>
           <div className="player-grid">{data.participants.map((participant, index) => {
             const standing = standings.find((row) => row.id === participant.id);
-            return <article key={participant.id}><i>{participant.name.slice(0, 1).toUpperCase()}</i><div><small>PLAYER {String(index + 1).padStart(2, "0")}</small><strong>{participant.name}</strong><span>{standing?.games ?? 0}試合 / {standing?.points ?? 0}pt</span></div><button className="icon-button" onClick={() => { if (confirm(`${participant.name} を削除しますか？`)) void mutate({ action: "deleteParticipant", participantId: participant.id }); }}>×</button></article>;
+            return <article key={participant.id}><i>{participant.name.slice(0, 1).toUpperCase()}</i><div><small>PLAYER {String(index + 1).padStart(2, "0")}</small><strong>{participant.name}</strong><span>{standing?.games ?? 0}試合 / {standing?.points ?? 0}pt</span></div>{user && <button className="icon-button" onClick={() => { if (confirm(`${participant.name} を削除しますか？`)) void mutate({ action: "deleteParticipant", participantId: participant.id }); }}>×</button>}</article>;
           })}</div>
         </section>}
 
@@ -244,6 +288,16 @@ export default function TournamentApp() {
           <label className="field"><span>大会名</span><input required value={tournamentName} onChange={(event) => setTournamentName(event.target.value)} placeholder="例：第2回 IIDX 王決定戦" maxLength={60} /></label>
           <label className="field"><span>開催日（任意）</span><input type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} /></label>
           <div className="modal-actions"><button type="button" className="secondary" onClick={() => setShowTournamentForm(false)}>キャンセル</button><button className="primary" disabled={busy}>{busy ? "作成中…" : "大会を作成"}</button></div>
+        </form>
+      </div>}
+
+      {showLoginForm && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowLoginForm(false); }}>
+        <form className="modal tournament-modal" onSubmit={login}>
+          <div className="modal-head"><div><p className="eyebrow">OPERATOR LOGIN</p><h2>運営ログイン</h2></div><button type="button" className="close" onClick={() => setShowLoginForm(false)}>×</button></div>
+          <p className="modal-copy">Supabase Authに登録した運営者のメールアドレスとパスワードを入力してください。</p>
+          <label className="field"><span>メールアドレス</span><input required type="email" autoComplete="username" value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} /></label>
+          <label className="field"><span>パスワード</span><input required type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>
+          <div className="modal-actions"><button type="button" className="secondary" onClick={() => setShowLoginForm(false)}>キャンセル</button><button className="primary" disabled={busy}>{busy ? "ログイン中…" : "ログイン"}</button></div>
         </form>
       </div>}
     </main>
