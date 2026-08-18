@@ -12,11 +12,13 @@ beatmania IIDXのローカルアリーナ非公式大会向け運営アプリで
 - 各参加者が必ず6試合出場する抽選制約
 - 対戦相手の重複を抑える候補比較
 - 各試合2名、各参加者3試合の配信台割り当て
-- 会場モニター用のプレイヤー呼び出し画面
+- 初回読込後に自動更新しない配信用プレイヤー表示画面
 - 抽選表からの結果入力と試合消化数表示
 - 予選順位・順位決定戦の自動集計
 - 1試合内での同率順位の登録
 - 選曲譜面の入力は過去回編集モードに限定
+- 参加者ごとの二つ名・選手画像の登録と後編集
+- A～Dの4選手を固定表示する配信用画面
 - 予選同点時のサドンデス対象表示
 - Supabase Authによる運営者ログインとRLS
 
@@ -27,6 +29,10 @@ Supabase DashboardのSQL Editorで [`supabase/schema.sql`](supabase/schema.sql) 
 - `tournaments.draw_schedule`
 - `tournaments.called_match_number`
 - `tournaments.is_archived`
+- `participants.title`
+- `participants.image_url`
+
+同じSQLから、選手画像用の公開Storageバケット `player-images` と、ログイン済み運営者だけが画像を追加・削除できるポリシーも作成されます。
 
 SQLは再実行可能です。ブラウザには公開用（anon / publishable）キーだけを設定し、`service_role`キーは使用しないでください。
 

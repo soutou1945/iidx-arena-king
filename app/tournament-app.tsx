@@ -5,7 +5,7 @@ import { loadTournament, mutateTournament } from "../src/data/tournamentReposito
 import { generatePreliminaryDraw } from "../src/lib/draw";
 import { buildFinalGroup, buildPreliminaryStandings, stageLabels, type Standing } from "../src/lib/standings";
 import { isSupabaseConfigured, supabase } from "../src/lib/supabase";
-import { emptyTournamentData, type DrawMatch, type MutationPayload, type Stage, type TournamentData } from "../src/types";
+import { emptyTournamentData, type DrawMatch, type MutationPayload, type Participant, type Stage, type TournamentData } from "../src/types";
 
 type Tab = "standings" | "draw" | "matches" | "players" | "rules";
 type DraftRow = { participantId: string; points: string; placement: string; selectedChart: string };
@@ -36,30 +36,34 @@ function isPastTournament(data: TournamentData): boolean {
   return latestCurrentTournament.id !== data.tournament.id;
 }
 
-/** 会場モニター向けの公開呼び出し画面です。 */
+/** 配信キャプチャ向けの静的表示です。初回読込後は自動でデータを更新しません。 */
 function CallBoard({ data }: { data: TournamentData }) {
   let calledMatchNumber = 1;
   if (data.tournament?.calledMatchNumber) calledMatchNumber = data.tournament.calledMatchNumber;
   const currentMatch = data.tournament?.drawSchedule.find((match) => match.matchNumber === calledMatchNumber);
-  const nextMatch = data.tournament?.drawSchedule.find((match) => match.matchNumber === calledMatchNumber + 1);
 
   if (!currentMatch) {
-    return <main className="call-board"><p className="call-kicker">IIDX ローカルアリーナ</p><h1>組み合わせ登録待ち</h1><p>組み合わせが登録されると、呼び出し対象がここに表示されます。</p></main>;
+    return <main className="call-board call-board-empty"><h1>表示する試合が選択されていません</h1></main>;
   }
 
   return (
     <main className="call-board">
-      <p className="call-kicker">ラウンド {currentMatch.roundNumber}・呼び出し中</p>
-      <h1>第{currentMatch.matchNumber}試合<span>参加者は集合してください</span></h1>
       <div className="call-players">
         {currentMatch.participantIds.map((participantId, index) => {
-          const isStreamPlayer = currentMatch.streamParticipantIds.includes(participantId);
-          let className = "";
-          if (isStreamPlayer) className = "stream";
-          return <article key={participantId} className={className}><small>参加者 {index + 1}</small><strong>{playerName(data, participantId)}</strong>{isStreamPlayer && <b>● 配信台</b>}</article>;
+          const participant = data.participants.find((item) => item.id === participantId);
+          const slotName = ["A", "B", "C", "D"][index];
+          return (
+            <article key={participantId}>
+              <span className="call-slot">{slotName}</span>
+              {participant?.imageUrl
+                ? <img src={participant.imageUrl} alt={`${participant.name} 選手画像`} />
+                : <div className="call-image-placeholder" aria-label="選手画像未登録">{participant?.name.slice(0, 1).toUpperCase() ?? "?"}</div>}
+              <p>{participant?.title || "　"}</p>
+              <strong>{participant?.name ?? "未登録"}</strong>
+            </article>
+          );
         })}
       </div>
-      <div className="call-footer"><strong>台番号 {currentMatch.tableNumber}</strong>{nextMatch && <p>次の試合：{nextMatch.participantIds.map((id) => playerName(data, id)).join(" ／ ")}</p>}</div>
     </main>
   );
 }
@@ -79,7 +83,6 @@ export default function TournamentApp() {
   const [error, setError] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [archiveEditMode, setArchiveEditMode] = useState(false);
-  const [participantName, setParticipantName] = useState("");
   const [showLogin, setShowLogin] = useState(false);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -103,13 +106,6 @@ export default function TournamentApp() {
   }
 
   useEffect(() => { void load(requestedTournamentId); }, []);
-
-  // 呼び出し画面は別端末で表示されるため、5秒ごとに最新の呼び出し番号を取得します。
-  useEffect(() => {
-    if (!callMode) return;
-    const timer = window.setInterval(() => { void load(requestedTournamentId); }, 5000);
-    return () => window.clearInterval(timer);
-  }, [callMode, requestedTournamentId]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -157,11 +153,6 @@ export default function TournamentApp() {
     setBusy(false);
     if (response.error) { setError("ログインできませんでした。メールアドレスとパスワードを確認してください。"); return; }
     setLoginPassword(""); setShowLogin(false);
-  }
-
-  async function addParticipant(event: FormEvent) {
-    event.preventDefault();
-    if (await mutate({ action: "addParticipant", name: participantName })) setParticipantName("");
   }
 
   async function createTournament(event: FormEvent) {
@@ -230,7 +221,7 @@ export default function TournamentApp() {
         {!loading && tab === "standings" && <StandingsPanel data={data} standings={standings} finalsReady={finalsReady} />}
         {!loading && tab === "draw" && <DrawPanel data={data} pastTournament={pastTournament} canEdit={canEdit} busy={busy} onAutomaticDraw={() => void createAutomaticDraw()} onSaveManualDraw={(schedule) => mutate({ action: "saveDraw", drawSchedule: schedule })} onCall={(matchNumber) => void mutate({ action: "callMatch", calledMatchNumber: matchNumber })} onOpenCallBoard={openCallBoard} onResultEntry={prepareResultEntry} />}
         {!loading && tab === "matches" && <MatchesPanel data={data} canEdit={canEdit} onNew={() => canEdit ? setShowMatchForm(true) : setShowLogin(true)} onDelete={(matchId) => void mutate({ action: "deleteMatch", matchId })} />}
-        {!loading && tab === "players" && <PlayersPanel data={data} standings={standings} canEdit={canEdit} name={participantName} setName={setParticipantName} onSubmit={addParticipant} onDelete={(participantId) => void mutate({ action: "deleteParticipant", participantId })} />}
+        {!loading && tab === "players" && <PlayersPanel data={data} standings={standings} canEdit={canEdit} busy={busy} onAdd={(name, title, imageFile) => mutate({ action: "addParticipant", name, title, imageFile })} onUpdate={(participantId, name, title, imageFile, removeImage) => mutate({ action: "updateParticipant", participantId, name, title, imageFile, removeImage })} onDelete={(participantId) => void mutate({ action: "deleteParticipant", participantId })} />}
         {!loading && tab === "rules" && <RulesPanel />}
       </div>
 
@@ -280,15 +271,141 @@ function DrawPanel({ data, pastTournament, canEdit, busy, onAutomaticDraw, onSav
   schedule.forEach((match) => match.streamParticipantIds.forEach((id) => streamCounts.set(id, (streamCounts.get(id) ?? 0) + 1)));
   const roundNumbers = [...new Set(schedule.map((match) => match.roundNumber))].sort((left, right) => left - right);
 
-  return <section><div className="section-heading"><div><p className="eyebrow">対戦管理</p><h2>組み合わせ</h2></div><div className="button-row">{!pastTournament && <button onClick={onOpenCallBoard} disabled={schedule.length === 0}>呼び出し画面を開く</button>}{!pastTournament && canEdit && <button className="primary" onClick={onAutomaticDraw} disabled={busy || data.participants.length !== 12}>{schedule.length > 0 ? "組み合わせを再抽選" : "18試合を自動抽選"}</button>}</div></div>{!pastTournament && data.participants.length !== 12 && <div className="notice">12名を登録すると自動抽選できます。現在は{data.participants.length}名です。</div>}{pastTournament && <ManualDrawEditor participants={data.participants} schedule={schedule} disabled={!canEdit || busy} onSave={onSaveManualDraw} />}{schedule.length > 0 && <><div className="stream-summary">{data.participants.map((participant) => <span key={participant.id}>{participant.name}<b>{streamCounts.get(participant.id) ?? 0}回配信</b></span>)}</div><div className="draw-rounds">{roundNumbers.map((roundNumber) => <article key={roundNumber}><h3>ラウンド {roundNumber}</h3>{schedule.filter((match) => match.roundNumber === roundNumber).sort((left, right) => left.matchNumber - right.matchNumber).map((match) => { let className = "draw-match"; if (data.tournament?.calledMatchNumber === match.matchNumber) className += " calling"; return <div className={className} key={match.matchNumber}><div className="draw-match-title"><strong>第{match.matchNumber}試合</strong><span>台番号 {match.tableNumber}</span></div><div className="draw-player-list">{match.participantIds.map((id) => <span key={id}>{playerName(data, id)}{match.streamParticipantIds.includes(id) && <i>配信</i>}</span>)}</div>{canEdit && <div className="row-actions">{!pastTournament && <button onClick={() => onCall(match.matchNumber)}>呼び出す</button>}<button onClick={() => onResultEntry(match)}>この試合の結果を入力</button></div>}</div>; })}</article>)}</div></>}</section>;
+  return <section><div className="section-heading"><div><p className="eyebrow">対戦管理</p><h2>組み合わせ</h2></div><div className="button-row">{!pastTournament && <button onClick={onOpenCallBoard} disabled={schedule.length === 0}>配信用表示を開く</button>}{!pastTournament && canEdit && <button className="primary" onClick={onAutomaticDraw} disabled={busy || data.participants.length !== 12}>{schedule.length > 0 ? "組み合わせを再抽選" : "18試合を自動抽選"}</button>}</div></div>{!pastTournament && data.participants.length !== 12 && <div className="notice">12名を登録すると自動抽選できます。現在は{data.participants.length}名です。</div>}{pastTournament && <ManualDrawEditor participants={data.participants} schedule={schedule} disabled={!canEdit || busy} onSave={onSaveManualDraw} />}{schedule.length > 0 && <><div className="stream-summary">{data.participants.map((participant) => <span key={participant.id}>{participant.name}<b>{streamCounts.get(participant.id) ?? 0}回配信</b></span>)}</div><div className="draw-rounds">{roundNumbers.map((roundNumber) => <article key={roundNumber}><h3>ラウンド {roundNumber}</h3>{schedule.filter((match) => match.roundNumber === roundNumber).sort((left, right) => left.matchNumber - right.matchNumber).map((match) => { let className = "draw-match"; if (data.tournament?.calledMatchNumber === match.matchNumber) className += " calling"; return <div className={className} key={match.matchNumber}><div className="draw-match-title"><strong>第{match.matchNumber}試合</strong><span>台番号 {match.tableNumber}</span></div><div className="draw-player-list">{match.participantIds.map((id) => <span key={id}>{playerName(data, id)}{match.streamParticipantIds.includes(id) && <i>配信</i>}</span>)}</div>{canEdit && <div className="row-actions">{!pastTournament && <button onClick={() => onCall(match.matchNumber)}>表示対象にする</button>}<button onClick={() => onResultEntry(match)}>この試合の結果を入力</button></div>}</div>; })}</article>)}</div></>}</section>;
 }
 
 function MatchesPanel({ data, canEdit, onNew, onDelete }: { data: TournamentData; canEdit: boolean; onNew: () => void; onDelete: (matchId: number) => void }) {
   return <section><div className="section-heading"><div><p className="eyebrow">登録済みデータ</p><h2>試合結果</h2></div>{canEdit && <button className="primary" onClick={onNew}>試合結果を追加</button>}</div>{data.matches.length === 0 && <Empty message="登録済みの試合結果はありません。" />}<div className="match-list">{[...data.matches].reverse().map((match) => <article key={match.id}><div className="match-title"><strong>{stageLabels[match.stage]} 第{match.roundNumber}試合</strong>{canEdit && <button className="danger-button" onClick={() => window.confirm("この試合結果を削除しますか？") && onDelete(match.id)}>削除</button>}</div>{data.results.filter((result) => result.matchId === match.id).sort((left, right) => left.placement - right.placement).map((result) => <div className="match-result" key={result.id}><b>{result.placement}位</b><span>{playerName(data, result.participantId)}</span><small>{result.selectedChart || "選曲未記録"}</small><strong>{result.points} pt</strong></div>)}</article>)}</div></section>;
 }
 
-function PlayersPanel({ data, standings, canEdit, name, setName, onSubmit, onDelete }: { data: TournamentData; standings: Standing[]; canEdit: boolean; name: string; setName: (value: string) => void; onSubmit: (event: FormEvent) => void; onDelete: (participantId: number) => void }) {
-  return <section><div className="section-heading"><div><p className="eyebrow">エントリー</p><h2>参加者</h2></div><strong>{data.participants.length} / 12名</strong></div><form className="entry-form" onSubmit={onSubmit}><label><span>プレイヤー名</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="DJ NAME" maxLength={30} disabled={!canEdit || data.participants.length >= 12} /></label><button className="primary" disabled={!canEdit || data.participants.length >= 12}>参加者を追加</button></form><div className="player-grid">{data.participants.map((participant) => { const standing = standings.find((item) => item.id === participant.id); return <article key={participant.id}><i>{participant.name.slice(0, 1).toUpperCase()}</i><div><strong>{participant.name}</strong><span>{standing?.games ?? 0}試合・{standing?.points ?? 0}pt</span></div>{canEdit && <button className="danger-button" onClick={() => window.confirm(`${participant.name}を削除しますか？`) && onDelete(participant.id)}>削除</button>}</article>; })}</div></section>;
+type PlayersPanelProps = {
+  data: TournamentData;
+  standings: Standing[];
+  canEdit: boolean;
+  busy: boolean;
+  onAdd: (name: string, title: string, imageFile?: File) => Promise<boolean>;
+  onUpdate: (participantId: number, name: string, title: string, imageFile: File | undefined, removeImage: boolean) => Promise<boolean>;
+  onDelete: (participantId: number) => void;
+};
+
+function PlayersPanel({ data, standings, canEdit, busy, onAdd, onUpdate, onDelete }: PlayersPanelProps) {
+  const [name, setName] = useState("");
+  const [title, setTitle] = useState("");
+  const [imageFile, setImageFile] = useState<File>();
+  const [imageInputKey, setImageInputKey] = useState(0);
+  const [editingParticipant, setEditingParticipant] = useState<Participant | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editImageFile, setEditImageFile] = useState<File>();
+  const [removeImage, setRemoveImage] = useState(false);
+
+  async function addParticipant(event: FormEvent) {
+    event.preventDefault();
+    const saved = await onAdd(name, title, imageFile);
+    if (!saved) return;
+    setName("");
+    setTitle("");
+    setImageFile(undefined);
+    setImageInputKey((currentKey) => currentKey + 1);
+  }
+
+  function startEditing(participant: Participant) {
+    setEditingParticipant(participant);
+    setEditName(participant.name);
+    setEditTitle(participant.title);
+    setEditImageFile(undefined);
+    setRemoveImage(false);
+  }
+
+  async function updateParticipant(event: FormEvent) {
+    event.preventDefault();
+    if (!editingParticipant) return;
+    const saved = await onUpdate(editingParticipant.id, editName, editTitle, editImageFile, removeImage);
+    if (saved) setEditingParticipant(null);
+  }
+
+  return (
+    <section>
+      <div className="section-heading">
+        <div><p className="eyebrow">エントリー</p><h2>参加者</h2></div>
+        <strong>{data.participants.length} / 12名</strong>
+      </div>
+
+      {canEdit && (
+        <form className="entry-form participant-entry-form" onSubmit={addParticipant}>
+          <label>
+            <span>プレイヤー名</span>
+            <input required value={name} onChange={(event) => setName(event.target.value)} placeholder="DJ NAME" maxLength={30} disabled={busy || data.participants.length >= 12} />
+          </label>
+          <label>
+            <span>二つ名</span>
+            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例：音速の挑戦者" maxLength={80} disabled={busy || data.participants.length >= 12} />
+          </label>
+          <label>
+            <span>選手画像</span>
+            <input key={imageInputKey} type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setImageFile(event.target.files?.[0])} disabled={busy || data.participants.length >= 12} />
+          </label>
+          <button className="primary" disabled={busy || data.participants.length >= 12}>参加者を追加</button>
+        </form>
+      )}
+      {canEdit && <p className="form-help player-image-help">選手画像はJPEG・PNG・WebP形式、5MB以下で登録してください。</p>}
+
+      <div className="player-grid">
+        {data.participants.map((participant) => {
+          const standing = standings.find((item) => item.id === participant.id);
+          return (
+            <article key={participant.id}>
+              {participant.imageUrl
+                ? <img src={participant.imageUrl} alt={`${participant.name} 選手画像`} />
+                : <i>{participant.name.slice(0, 1).toUpperCase()}</i>}
+              <div>
+                {participant.title && <small>{participant.title}</small>}
+                <strong>{participant.name}</strong>
+                <span>{standing?.games ?? 0}試合・{standing?.points ?? 0}pt</span>
+              </div>
+              {canEdit && (
+                <div className="player-actions">
+                  <button onClick={() => startEditing(participant)}>編集</button>
+                  <button className="danger-button" onClick={() => window.confirm(`${participant.name}を削除しますか？`) && onDelete(participant.id)}>削除</button>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+
+      {editingParticipant && (
+        <Modal onClose={() => setEditingParticipant(null)}>
+          <form onSubmit={updateParticipant}>
+            <p className="dialog-kicker">参加者プロフィール</p>
+            <h2>{editingParticipant.name}を編集</h2>
+            <label className="field">
+              <span>プレイヤー名</span>
+              <input required value={editName} onChange={(event) => setEditName(event.target.value)} maxLength={30} />
+            </label>
+            <label className="field">
+              <span>二つ名</span>
+              <input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} maxLength={80} placeholder="例：音速の挑戦者" />
+            </label>
+            <label className="field">
+              <span>選手画像を差し替える</span>
+              <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { setEditImageFile(event.target.files?.[0]); setRemoveImage(false); }} />
+            </label>
+            {editingParticipant.imageUrl && !editImageFile && (
+              <label className="remove-image-checkbox">
+                <input type="checkbox" checked={removeImage} onChange={(event) => setRemoveImage(event.target.checked)} />
+                <span>現在の選手画像を削除する</span>
+              </label>
+            )}
+            <div className="modal-actions">
+              <button type="button" onClick={() => setEditingParticipant(null)}>キャンセル</button>
+              <button className="primary" disabled={busy}>変更を保存</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </section>
+  );
 }
 
 function RulesPanel() {

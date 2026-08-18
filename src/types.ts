@@ -23,6 +23,8 @@ export type Tournament = {
 export type Participant = {
   id: number;
   name: string;
+  title: string;
+  imageUrl: string;
   createdAt: string;
 };
 
@@ -59,8 +61,9 @@ export type ResultInput = {
 
 /** 画面からデータ操作層へ渡す更新内容です。 */
 export type MutationPayload = {
-  action: "createTournament" | "addParticipant" | "deleteParticipant" | "addMatch" | "deleteMatch" | "resetTournament" | "saveDraw" | "callMatch";
+  action: "createTournament" | "addParticipant" | "updateParticipant" | "deleteParticipant" | "addMatch" | "deleteMatch" | "resetTournament" | "saveDraw" | "callMatch";
   name?: string; participantId?: number; matchId?: number; tournamentName?: string;
+  title?: string; imageFile?: File; removeImage?: boolean;
   eventDate?: string; stage?: Stage; results?: ResultInput[];
   isArchived?: boolean;
   drawSchedule?: DrawMatch[]; calledMatchNumber?: number | null;
