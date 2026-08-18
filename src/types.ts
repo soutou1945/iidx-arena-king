@@ -11,20 +11,58 @@ export type DrawMatch = {
 };
 
 export type Tournament = {
-  id: number; name: string; eventDate: string; createdAt: string;
-  drawSchedule: DrawMatch[]; calledMatchNumber: number | null;
+  id: number;
+  name: string;
+  eventDate: string;
+  createdAt: string;
+  isArchived: boolean;
+  drawSchedule: DrawMatch[];
+  calledMatchNumber: number | null;
 };
-export type Participant = { id: number; name: string; createdAt: string };
-export type Match = { id: number; stage: Stage; roundNumber: number; createdAt: string };
-export type Result = { id: number; matchId: number; participantId: number; points: number; placement: number; selectedChart: string };
-export type TournamentData = { tournaments: Tournament[]; tournament: Tournament | null; participants: Participant[]; matches: Match[]; results: Result[] };
-export type ResultInput = { participantId: number; points: number; placement: number; selectedChart: string };
+
+export type Participant = {
+  id: number;
+  name: string;
+  createdAt: string;
+};
+
+export type Match = {
+  id: number;
+  stage: Stage;
+  roundNumber: number;
+  createdAt: string;
+};
+
+export type Result = {
+  id: number;
+  matchId: number;
+  participantId: number;
+  points: number;
+  placement: number;
+  selectedChart: string;
+};
+
+export type TournamentData = {
+  tournaments: Tournament[];
+  tournament: Tournament | null;
+  participants: Participant[];
+  matches: Match[];
+  results: Result[];
+};
+
+export type ResultInput = {
+  participantId: number;
+  points: number;
+  placement: number;
+  selectedChart: string;
+};
 
 /** 画面からデータ操作層へ渡す更新内容です。 */
 export type MutationPayload = {
   action: "createTournament" | "addParticipant" | "deleteParticipant" | "addMatch" | "deleteMatch" | "resetTournament" | "saveDraw" | "callMatch";
   name?: string; participantId?: number; matchId?: number; tournamentName?: string;
   eventDate?: string; stage?: Stage; results?: ResultInput[];
+  isArchived?: boolean;
   drawSchedule?: DrawMatch[]; calledMatchNumber?: number | null;
 };
 

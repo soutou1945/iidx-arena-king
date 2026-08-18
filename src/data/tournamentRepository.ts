@@ -1,7 +1,15 @@
 import { requireSupabase } from "../lib/supabase";
 import type { DrawMatch, Match, MutationPayload, Participant, Result, Tournament, TournamentData } from "../types";
 
-type TournamentRow = { id:number; name:string; event_date:string|null; created_at:string; draw_schedule:unknown; called_match_number:number|null };
+type TournamentRow = {
+  id: number;
+  name: string;
+  event_date: string | null;
+  created_at: string;
+  is_archived?: boolean | null;
+  draw_schedule: unknown;
+  called_match_number: number | null;
+};
 type ParticipantRow = { id:number; name:string; created_at:string };
 type MatchRow = { id:number; stage:Match["stage"]; round_number:number; created_at:string };
 type ResultRow = { id:number; match_id:number; participant_id:number; points:number; placement:number; selected_chart:string };
@@ -18,8 +26,15 @@ function toDrawSchedule(value: unknown): DrawMatch[] {
 }
 
 function toTournament(row:TournamentRow):Tournament {
-  return { id:row.id, name:row.name, eventDate:row.event_date ?? "", createdAt:row.created_at,
-    drawSchedule:toDrawSchedule(row.draw_schedule), calledMatchNumber:row.called_match_number };
+  return {
+    id: row.id,
+    name: row.name,
+    eventDate: row.event_date ?? "",
+    createdAt: row.created_at,
+    isArchived: row.is_archived ?? false,
+    drawSchedule: toDrawSchedule(row.draw_schedule),
+    calledMatchNumber: row.called_match_number,
+  };
 }
 function toParticipant(row:ParticipantRow):Participant { return { id:row.id, name:row.name, createdAt:row.created_at }; }
 function toMatch(row:MatchRow):Match { return { id:row.id, stage:row.stage, roundNumber:row.round_number, createdAt:row.created_at }; }
@@ -29,9 +44,25 @@ function assertSuccess(error:{message:string}|null):void { if (error) throw new 
 /** 選択中の大会と参加者・試合・結果・抽選表をまとめて取得します。 */
 export async function loadTournament(requestedTournamentId?:number):Promise<TournamentData> {
   const client=requireSupabase();
-  const tournamentsResponse=await client.from("tournaments").select("id,name,event_date,created_at,draw_schedule,called_match_number").order("id",{ascending:false});
-  assertSuccess(tournamentsResponse.error);
-  const tournaments=((tournamentsResponse.data ?? []) as TournamentRow[]).map(toTournament);
+  const currentSchemaResponse=await client
+    .from("tournaments")
+    .select("id,name,event_date,created_at,is_archived,draw_schedule,called_match_number")
+    .order("id",{ascending:false});
+
+  let tournamentRows: unknown[] = currentSchemaResponse.data ?? [];
+  let tournamentError = currentSchemaResponse.error;
+
+  // SQL更新前に新しい画面が公開されても閲覧画面が停止しないよう、旧列構成へ一度だけ退避します。
+  if(currentSchemaResponse.error?.message.includes("is_archived")){
+    const legacySchemaResponse=await client
+      .from("tournaments")
+      .select("id,name,event_date,created_at,draw_schedule,called_match_number")
+      .order("id",{ascending:false});
+    tournamentRows = legacySchemaResponse.data ?? [];
+    tournamentError = legacySchemaResponse.error;
+  }
+  assertSuccess(tournamentError);
+  const tournaments=(tournamentRows as TournamentRow[]).map(toTournament);
   const tournament=tournaments.find((item)=>item.id===requestedTournamentId) ?? tournaments[0] ?? null;
   if(!tournament) return {tournaments,tournament:null,participants:[],matches:[],results:[]};
   const [participantsResponse,matchesResponse]=await Promise.all([
@@ -54,7 +85,12 @@ export async function mutateTournament(payload:MutationPayload,tournamentId?:num
   const client=requireSupabase();
   if(payload.action==="createTournament"){
     const name=payload.tournamentName?.trim() ?? ""; if(!name) throw new Error("大会名を入力してください。");
-    const response=await client.from("tournaments").insert({name,event_date:payload.eventDate || null}).select("id").single();
+    // 過去回として作成した大会は、最新IDでもアーカイブ扱いにできるよう明示的に保存します。
+    const response=await client.from("tournaments").insert({
+      name,
+      event_date:payload.eventDate || null,
+      is_archived:payload.isArchived ?? false,
+    }).select("id").single();
     assertSuccess(response.error); return loadTournament((response.data as {id:number}).id);
   }
   if(!tournamentId) throw new Error("大会を選択してください。");
@@ -69,8 +105,17 @@ export async function mutateTournament(payload:MutationPayload,tournamentId?:num
   }else if(payload.action==="deleteMatch"){
     const response=await client.from("matches").delete().eq("id",payload.matchId ?? 0).eq("tournament_id",tournamentId); assertSuccess(response.error);
   }else if(payload.action==="saveDraw"){
-    if(!payload.drawSchedule || payload.drawSchedule.length!==18) throw new Error("18試合分の抽選結果が必要です。");
-    const response=await client.from("tournaments").update({draw_schedule:payload.drawSchedule,called_match_number:1}).eq("id",tournamentId); assertSuccess(response.error);
+    if(!payload.drawSchedule) throw new Error("組み合わせデータがありません。");
+    if(payload.drawSchedule.length>18) throw new Error("予選の組み合わせは18試合までです。");
+
+    // 過去回は資料が一部だけ残っている場合もあるため、1～18試合の途中状態も保存できます。
+    let calledMatchNumber:number|null=null;
+    if(payload.drawSchedule.length>0) calledMatchNumber=1;
+    const response=await client.from("tournaments").update({
+      draw_schedule:payload.drawSchedule,
+      called_match_number:calledMatchNumber,
+    }).eq("id",tournamentId);
+    assertSuccess(response.error);
   }else if(payload.action==="callMatch"){
     const response=await client.from("tournaments").update({called_match_number:payload.calledMatchNumber ?? null}).eq("id",tournamentId); assertSuccess(response.error);
   }else if(payload.action==="resetTournament"){

@@ -1,140 +1,303 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { User } from "@supabase/supabase-js";
+import ManualDrawEditor from "../src/components/ManualDrawEditor";
 import { loadTournament, mutateTournament } from "../src/data/tournamentRepository";
 import { generatePreliminaryDraw } from "../src/lib/draw";
+import { buildFinalGroup, buildPreliminaryStandings, stageLabels, type Standing } from "../src/lib/standings";
 import { isSupabaseConfigured, supabase } from "../src/lib/supabase";
-import { emptyTournamentData, type DrawMatch, type MutationPayload, type Participant, type Stage, type TournamentData } from "../src/types";
+import { emptyTournamentData, type DrawMatch, type MutationPayload, type Stage, type TournamentData } from "../src/types";
 
 type Tab = "standings" | "draw" | "matches" | "players" | "rules";
-type Standing = Participant & { points:number; games:number; firsts:number; fourths:number; suddenDeath:boolean };
-type DraftRow = { participantId:string; points:string; placement:string; selectedChart:string };
-const initialRows:DraftRow[]=[1,2,3,4].map((placement)=>({participantId:"",points:"",placement:String(placement),selectedChart:""}));
-const stageLabels:Record<Stage,string>={preliminary:"予選",king:"王決定戦",middle:"中位決定戦",reverse:"逆王決定戦"};
-const tabLabels:Record<Tab,string>={standings:"順位表",draw:"抽選・呼び出し",matches:"試合履歴",players:"参加者",rules:"大会ルール"};
+type DraftRow = { participantId: string; points: string; placement: string; selectedChart: string };
 
-/** 合計pt→1位数→4位数で集計し、なお同点ならサドンデス対象として表示します。 */
-function preliminaryStandings(data:TournamentData):Standing[]{
-  const matchIds=new Set(data.matches.filter((match)=>match.stage==="preliminary").map((match)=>match.id));
-  const results=data.results.filter((result)=>matchIds.has(result.matchId));
-  const rows=data.participants.map((participant)=>{
-    const own=results.filter((result)=>result.participantId===participant.id);
-    return {...participant,points:own.reduce((sum,result)=>sum+result.points,0),games:own.length,
-      firsts:own.filter((result)=>result.placement===1).length,fourths:own.filter((result)=>result.placement===4).length,suddenDeath:false};
-  });
-  rows.sort((left,right)=>right.points-left.points || right.firsts-left.firsts || left.fourths-right.fourths || left.id-right.id);
-  rows.forEach((row,index)=>{
-    row.suddenDeath=rows.some((other,otherIndex)=>otherIndex!==index && other.points===row.points && other.firsts===row.firsts && other.fourths===row.fourths);
-  });
-  return rows;
+const tabLabels: Record<Tab, string> = {
+  standings: "順位表", draw: "組み合わせ", matches: "試合結果", players: "参加者", rules: "大会ルール",
+};
+
+function createInitialResultRows(): DraftRow[] {
+  return [1, 2, 3, 4].map((placement) => ({ participantId: "", points: "", placement: String(placement), selectedChart: "" }));
 }
 
-/** 順位決定戦は獲得pt順、同ptなら予選上位順に並べます。 */
-function finalGroup(stage:Stage,data:TournamentData,preliminary:Standing[]){
-  const ids=new Set(data.matches.filter((match)=>match.stage===stage).map((match)=>match.id));
-  const results=data.results.filter((result)=>ids.has(result.matchId));
-  let eligible:Standing[]=[];
-  if(stage==="king") eligible=preliminary.slice(0,4);
-  if(stage==="middle") eligible=preliminary.slice(4,8);
-  if(stage==="reverse") eligible=preliminary.slice(8,12);
-  return eligible.map((player)=>({...player,finalPoints:results.filter((result)=>result.participantId===player.id).reduce((sum,result)=>sum+result.points,0)}))
-    .sort((left,right)=>right.finalPoints-left.finalPoints || preliminary.findIndex((row)=>row.id===left.id)-preliminary.findIndex((row)=>row.id===right.id));
+function playerName(data: TournamentData, participantId: number): string {
+  const participant = data.participants.find((item) => item.id === participantId);
+  if (!participant) return "未登録";
+  return participant.name;
 }
 
-function playerName(data:TournamentData,id:number):string{return data.participants.find((player)=>player.id===id)?.name ?? "未登録";}
-
-/** 会場モニター用の公開呼び出し画面です。URLのcall=1で表示します。 */
-function CallBoard({data}:{data:TournamentData}){
-  const number=data.tournament?.calledMatchNumber ?? 1;
-  const current=data.tournament?.drawSchedule.find((match)=>match.matchNumber===number);
-  const next=data.tournament?.drawSchedule.find((match)=>match.matchNumber===number+1);
-  if(!current) return <main className="call-board"><p className="call-kicker">IIDX LOCAL ARENA</p><h1>組み合わせ抽選待ち</h1><p>抽選完了後、この画面に呼び出し対象が表示されます。</p></main>;
-  return <main className="call-board">
-    <p className="call-kicker">NOW CALLING / ROUND {current.roundNumber}</p>
-    <h1>第{current.matchNumber}試合 <span>集合してください</span></h1>
-    <div className="call-players">{current.participantIds.map((id,index)=><article key={id} className={current.streamParticipantIds.includes(id)?"stream":""}>
-      <small>PLAYER {index+1}</small><strong>{playerName(data,id)}</strong>{current.streamParticipantIds.includes(id)&&<b>● 配信台</b>}
-    </article>)}</div>
-    <div className="call-footer"><span>TABLE {current.tableNumber}</span>{next&&<p>次の試合：{next.participantIds.map((id)=>playerName(data,id)).join(" / ")}</p>}</div>
-  </main>;
+/**
+ * 明示的にアーカイブ指定された大会、または現在大会より前に作成された大会を過去回と判定します。
+ * 旧データにも互換性を持たせるため、isArchivedが未設定だった大会は作成順で補完します。
+ */
+function isPastTournament(data: TournamentData): boolean {
+  if (!data.tournament) return false;
+  if (data.tournament.isArchived) return true;
+  const latestCurrentTournament = data.tournaments.find((tournament) => !tournament.isArchived);
+  if (!latestCurrentTournament) return false;
+  return latestCurrentTournament.id !== data.tournament.id;
 }
 
-export default function TournamentApp(){
-  const params=new URLSearchParams(window.location.search);
-  const callMode=params.get("call")==="1";
-  const requestedId=Number(params.get("tournament")) || undefined;
-  const [data,setData]=useState<TournamentData>(emptyTournamentData);
-  const [tab,setTab]=useState<Tab>("standings");
-  const [loading,setLoading]=useState(true); const [busy,setBusy]=useState(false); const [error,setError]=useState("");
-  const [user,setUser]=useState<User|null>(null); const [showLogin,setShowLogin]=useState(false);
-  const [email,setEmail]=useState(""); const [password,setPassword]=useState("");
-  const [name,setName]=useState(""); const [showTournament,setShowTournament]=useState(false);
-  const [tournamentName,setTournamentName]=useState(""); const [eventDate,setEventDate]=useState("");
-  const [showMatch,setShowMatch]=useState(false); const [stage,setStage]=useState<Stage>("preliminary"); const [rows,setRows]=useState<DraftRow[]>(initialRows);
+/** 会場モニター向けの公開呼び出し画面です。 */
+function CallBoard({ data }: { data: TournamentData }) {
+  let calledMatchNumber = 1;
+  if (data.tournament?.calledMatchNumber) calledMatchNumber = data.tournament.calledMatchNumber;
+  const currentMatch = data.tournament?.drawSchedule.find((match) => match.matchNumber === calledMatchNumber);
+  const nextMatch = data.tournament?.drawSchedule.find((match) => match.matchNumber === calledMatchNumber + 1);
 
-  async function load(id?:number){try{setData(await loadTournament(id));setError("");}catch(caught){setError(caught instanceof Error?caught.message:"読込に失敗しました。");}finally{setLoading(false);}}
-  useEffect(()=>{void load(requestedId);},[]);
-  useEffect(()=>{
-    if(!callMode) return;
-    const timer=window.setInterval(()=>{void load(requestedId);},5000);
-    return()=>window.clearInterval(timer);
-  },[callMode,requestedId]);
-  useEffect(()=>{
-    if(!supabase) return;
-    void supabase.auth.getSession().then(({data:session})=>setUser(session.session?.user ?? null));
-    const {data:listener}=supabase.auth.onAuthStateChange((_event,session)=>setUser(session?.user ?? null));
-    return()=>listener.subscription.unsubscribe();
-  },[]);
-
-  async function mutate(payload:MutationPayload){
-    setBusy(true);setError("");
-    try{if(!user) throw new Error("運営ログインが必要です。");setData(await mutateTournament(payload,data.tournament?.id));return true;}
-    catch(caught){setError(caught instanceof Error?caught.message:"保存に失敗しました。");return false;}finally{setBusy(false);}
+  if (!currentMatch) {
+    return <main className="call-board"><p className="call-kicker">IIDX ローカルアリーナ</p><h1>組み合わせ登録待ち</h1><p>組み合わせが登録されると、呼び出し対象がここに表示されます。</p></main>;
   }
-  const standings=useMemo(()=>preliminaryStandings(data),[data]);
-  const completed=standings.filter((row)=>row.games>=6).length;
-  const prelimMatches=data.matches.filter((match)=>match.stage==="preliminary");
-  const finalsReady=data.participants.length===12 && completed===12 && !standings.some((row)=>row.suddenDeath);
 
-  if(callMode) return loading?<main className="call-board"><h1>読み込み中…</h1></main>:<CallBoard data={data}/>;
-
-  async function login(event:FormEvent){event.preventDefault();if(!supabase)return;setBusy(true);const response=await supabase.auth.signInWithPassword({email,password});setBusy(false);if(response.error){setError("ログインできませんでした。");return;}setPassword("");setShowLogin(false);}
-  async function addParticipant(event:FormEvent){event.preventDefault();if(await mutate({action:"addParticipant",name}))setName("");}
-  async function createTournament(event:FormEvent){event.preventDefault();if(await mutate({action:"createTournament",tournamentName,eventDate})){setShowTournament(false);setTournamentName("");setEventDate("");}}
-  function updateRow(index:number,key:keyof DraftRow,value:string){setRows((current)=>current.map((row,rowIndex)=>rowIndex===index?{...row,[key]:value}:row));}
-  async function saveMatch(event:FormEvent){event.preventDefault();const ok=await mutate({action:"addMatch",stage,results:rows.map((row)=>({participantId:Number(row.participantId),points:Number(row.points),placement:Number(row.placement),selectedChart:row.selectedChart}))});if(ok){setRows(initialRows);setShowMatch(false);setTab("standings");}}
-  function prepareResult(match:DrawMatch){setStage("preliminary");setRows(match.participantIds.map((id,index)=>({participantId:String(id),points:"",placement:String(index+1),selectedChart:""})));setShowMatch(true);}
-  async function createDraw(){if(data.tournament?.drawSchedule.length && !window.confirm("現在の抽選結果を作り直しますか？"))return;try{const draw=generatePreliminaryDraw(data.participants);await mutate({action:"saveDraw",drawSchedule:draw});}catch(caught){setError(caught instanceof Error?caught.message:"抽選に失敗しました。");}}
-  function openCallBoard(){if(!data.tournament)return;const url=`${window.location.pathname}?call=1&tournament=${data.tournament.id}`;window.open(url,"iidx-call-board");}
-
-  return <main>
-    <header className="topbar"><div className="brand"><span>王</span><div><strong>ARENA CROWN</strong><small>IIDX LOCAL TOURNAMENT</small></div></div><div className="header-actions">
-      <label><small>大会</small><select value={data.tournament?.id ?? ""} onChange={(event)=>void load(Number(event.target.value))}>{data.tournaments.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-      <button className="secondary" onClick={()=>user?setShowTournament(true):setShowLogin(true)}>新しい大会</button>
-      <button className="primary" onClick={()=>user?setShowMatch(true):setShowLogin(true)} disabled={data.participants.length<4}>試合結果</button>
-      <button className="auth-button" onClick={()=>user?void supabase?.auth.signOut():setShowLogin(true)}>{user?"ログアウト":"運営ログイン"}</button>
-    </div></header>
-    <section className="hero"><div><p className="eyebrow">18 MATCHES / 12 PLAYERS</p><h1>{data.tournament?.name ?? "大会を作成"}</h1><p>組み合わせ抽選から呼び出し、試合結果、最終順位までを一元管理します。</p></div><div className="hero-status"><small>PRELIMINARY</small><strong>{prelimMatches.length} / 18 試合</strong><div><i style={{width:`${Math.min(100,prelimMatches.length/18*100)}%`}}/></div><span>{completed} / 12人が6試合完了</span></div></section>
-    {error&&<div className="error">{error}<button onClick={()=>setError("")}>×</button></div>}
-    {!isSupabaseConfigured&&<div className="error">Supabaseの接続情報が未設定です。</div>}
-    <nav className="tabs">{(["standings","draw","matches","players","rules"] as Tab[]).map((item)=><button key={item} className={tab===item?"active":""} onClick={()=>setTab(item)}>{tabLabels[item]}</button>)}</nav>
-    <div className="content">{loading&&<div className="empty">読み込み中…</div>}
-      {!loading&&tab==="standings"&&<Standings data={data} standings={standings} finalsReady={finalsReady}/>} 
-      {!loading&&tab==="draw"&&<DrawPanel data={data} user={user} busy={busy} onCreateDraw={()=>{void createDraw();}} onCall={(number)=>{void mutate({action:"callMatch",calledMatchNumber:number});}} onOpenCall={openCallBoard} onResult={prepareResult}/>} 
-      {!loading&&tab==="matches"&&<Matches data={data} user={user} onNew={()=>{if(user)setShowMatch(true);else setShowLogin(true);}} onDelete={(id)=>{void mutate({action:"deleteMatch",matchId:id});}}/>} 
-      {!loading&&tab==="players"&&<Players data={data} standings={standings} user={user} name={name} setName={setName} onSubmit={addParticipant} onDelete={(id)=>{void mutate({action:"deleteParticipant",participantId:id});}}/>} 
-      {!loading&&tab==="rules"&&<Rules/>}
-    </div>
-    {showMatch&&<Modal onClose={()=>setShowMatch(false)}><form onSubmit={saveMatch}><h2>試合結果を登録</h2><label className="field">試合区分<select value={stage} onChange={(event)=>setStage(event.target.value as Stage)}>{Object.entries(stageLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label><div className="result-rows">{rows.map((row,index)=><div className="result-row" key={index}><select value={row.placement} onChange={(event)=>updateRow(index,"placement",event.target.value)}>{[1,2,3,4].map((place)=><option key={place}>{place}</option>)}</select><select required value={row.participantId} onChange={(event)=>updateRow(index,"participantId",event.target.value)}><option value="">参加者</option>{data.participants.map((player)=><option key={player.id} value={player.id}>{player.name}</option>)}</select><input required type="number" min="0" placeholder="pt" value={row.points} onChange={(event)=>updateRow(index,"points",event.target.value)}/><input placeholder="曲名 [A/L]" value={row.selectedChart} onChange={(event)=>updateRow(index,"selectedChart",event.target.value)}/></div>)}</div><div className="modal-actions"><button type="button" onClick={()=>setShowMatch(false)}>キャンセル</button><button className="primary" disabled={busy}>保存</button></div></form></Modal>}
-    {showTournament&&<Modal onClose={()=>setShowTournament(false)}><form onSubmit={createTournament}><h2>新しい大会</h2><label className="field">大会名<input required value={tournamentName} onChange={(event)=>setTournamentName(event.target.value)}/></label><label className="field">開催日<input type="date" value={eventDate} onChange={(event)=>setEventDate(event.target.value)}/></label><div className="modal-actions"><button type="button" onClick={()=>setShowTournament(false)}>キャンセル</button><button className="primary">作成</button></div></form></Modal>}
-    {showLogin&&<Modal onClose={()=>setShowLogin(false)}><form onSubmit={login}><h2>運営ログイン</h2><label className="field">メールアドレス<input required type="email" value={email} onChange={(event)=>setEmail(event.target.value)}/></label><label className="field">パスワード<input required type="password" value={password} onChange={(event)=>setPassword(event.target.value)}/></label><div className="modal-actions"><button type="button" onClick={()=>setShowLogin(false)}>キャンセル</button><button className="primary">ログイン</button></div></form></Modal>}
-  </main>;
+  return (
+    <main className="call-board">
+      <p className="call-kicker">ラウンド {currentMatch.roundNumber}・呼び出し中</p>
+      <h1>第{currentMatch.matchNumber}試合<span>参加者は集合してください</span></h1>
+      <div className="call-players">
+        {currentMatch.participantIds.map((participantId, index) => {
+          const isStreamPlayer = currentMatch.streamParticipantIds.includes(participantId);
+          let className = "";
+          if (isStreamPlayer) className = "stream";
+          return <article key={participantId} className={className}><small>参加者 {index + 1}</small><strong>{playerName(data, participantId)}</strong>{isStreamPlayer && <b>● 配信台</b>}</article>;
+        })}
+      </div>
+      <div className="call-footer"><strong>台番号 {currentMatch.tableNumber}</strong>{nextMatch && <p>次の試合：{nextMatch.participantIds.map((id) => playerName(data, id)).join(" ／ ")}</p>}</div>
+    </main>
+  );
 }
 
-function Standings({data,standings,finalsReady}:{data:TournamentData;standings:Standing[];finalsReady:boolean}){return <section><div className="section-heading"><div><p className="eyebrow">PRELIMINARY RANKING</p><h2>予選順位表</h2></div><span>同pt：1位数 → 4位数 → サドンデス</span></div><div className="ranking-table"><div className="ranking-head"><span>順位</span><span>プレイヤー</span><span>消化</span><span>1位</span><span>4位</span><span>合計pt</span></div>{standings.map((row,index)=><div className="ranking-row" key={row.id}><b>{index+1}</b><strong>{row.name}{row.suddenDeath&&<em className="sudden">サドンデス</em>}</strong><span>{row.games}/6</span><span>{row.firsts}</span><span>{row.fourths}</span><b>{row.points} pt</b></div>)}</div>{data.participants.length===12&&<div className="finals-grid">{(["king","middle","reverse"] as Stage[]).map((stage)=><article key={stage}><h3>{stageLabels[stage]}</h3>{finalGroup(stage,data,standings).map((row,index)=><div key={row.id}><b>{index+1}</b><span>{row.name}</span><strong>{row.finalPoints} pt</strong></div>)}{!finalsReady&&<small>全員完走・サドンデス確定後に組分け</small>}</article>)}</div>}</section>}
+/** 大会管理アプリ全体の状態と画面切り替えを管理します。 */
+export default function TournamentApp() {
+  const queryParameters = new URLSearchParams(window.location.search);
+  const callMode = queryParameters.get("call") === "1";
+  const tournamentParameter = Number(queryParameters.get("tournament"));
+  let requestedTournamentId: number | undefined;
+  if (tournamentParameter > 0) requestedTournamentId = tournamentParameter;
 
-function DrawPanel({data,user,busy,onCreateDraw,onCall,onOpenCall,onResult}:{data:TournamentData;user:User|null;busy:boolean;onCreateDraw:()=>void;onCall:(n:number)=>void;onOpenCall:()=>void;onResult:(m:DrawMatch)=>void}){const schedule=data.tournament?.drawSchedule ?? [];const streamCounts=new Map<number,number>();schedule.forEach((match)=>match.streamParticipantIds.forEach((id)=>streamCounts.set(id,(streamCounts.get(id)??0)+1)));return <section><div className="section-heading"><div><p className="eyebrow">MATCH DRAW & CALL</p><h2>組み合わせ抽選・呼び出し</h2></div><div className="button-row"><button onClick={onOpenCall} disabled={!schedule.length}>呼び出し画面を開く</button>{user&&<button className="primary" onClick={onCreateDraw} disabled={busy||data.participants.length!==12}>{schedule.length?"再抽選":"18試合を抽選"}</button>}</div></div>{data.participants.length!==12&&<div className="notice">12名を登録すると抽選できます（現在 {data.participants.length}名）。</div>}{schedule.length>0&&<><div className="stream-summary">{data.participants.map((player)=><span key={player.id}>{player.name}<b>{streamCounts.get(player.id)??0}配信</b></span>)}</div><div className="draw-rounds">{[1,2,3,4,5,6].map((round)=><article key={round}><h3>ROUND {round}</h3>{schedule.filter((match)=>match.roundNumber===round).map((match)=><div className={data.tournament?.calledMatchNumber===match.matchNumber?"draw-match calling":"draw-match"} key={match.matchNumber}><b>第{match.matchNumber}試合</b><div>{match.participantIds.map((id)=><span key={id}>{playerName(data,id)}{match.streamParticipantIds.includes(id)&&<i>配信</i>}</span>)}</div>{user&&<aside><button onClick={()=>onCall(match.matchNumber)}>呼出</button><button onClick={()=>onResult(match)}>結果入力</button></aside>}</div>)}</article>)}</div></>}</section>}
+  const [data, setData] = useState<TournamentData>(emptyTournamentData);
+  const [tab, setTab] = useState<Tab>("standings");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [user, setUser] = useState<User | null>(null);
+  const [archiveEditMode, setArchiveEditMode] = useState(false);
+  const [participantName, setParticipantName] = useState("");
+  const [showLogin, setShowLogin] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [showTournamentForm, setShowTournamentForm] = useState(false);
+  const [tournamentName, setTournamentName] = useState("");
+  const [eventDate, setEventDate] = useState("");
+  const [createAsArchive, setCreateAsArchive] = useState(false);
+  const [showMatchForm, setShowMatchForm] = useState(false);
+  const [stage, setStage] = useState<Stage>("preliminary");
+  const [resultRows, setResultRows] = useState<DraftRow[]>(createInitialResultRows);
 
-function Matches({data,user,onNew,onDelete}:{data:TournamentData;user:User|null;onNew:()=>void;onDelete:(id:number)=>void}){return <section><div className="section-heading"><h2>試合履歴</h2><button className="primary" onClick={onNew}>新しい試合</button></div><div className="match-list">{[...data.matches].reverse().map((match)=><article key={match.id}><div className="match-title"><b>{stageLabels[match.stage]} #{match.roundNumber}</b>{user&&<button onClick={()=>window.confirm("削除しますか？")&&onDelete(match.id)}>削除</button>}</div>{data.results.filter((result)=>result.matchId===match.id).sort((a,b)=>a.placement-b.placement).map((result)=><div className="match-result" key={result.id}><b>{result.placement}位</b><span>{playerName(data,result.participantId)}</span><small>{result.selectedChart||"選曲未記録"}</small><strong>{result.points} pt</strong></div>)}</article>)}</div></section>}
-function Players({data,standings,user,name,setName,onSubmit,onDelete}:{data:TournamentData;standings:Standing[];user:User|null;name:string;setName:(v:string)=>void;onSubmit:(e:FormEvent)=>void;onDelete:(id:number)=>void}){return <section><div className="section-heading"><h2>参加者登録</h2><b>{data.participants.length}/12</b></div><form className="entry-form" onSubmit={onSubmit}><input placeholder="DJ NAME" value={name} onChange={(event)=>setName(event.target.value)} disabled={!user||data.participants.length>=12}/><button className="primary" disabled={!user||data.participants.length>=12}>追加</button></form><div className="player-grid">{data.participants.map((player)=><article key={player.id}><i>{player.name.slice(0,1)}</i><strong>{player.name}</strong><span>{standings.find((row)=>row.id===player.id)?.games??0}試合</span>{user&&<button onClick={()=>window.confirm("削除しますか？")&&onDelete(player.id)}>×</button>}</article>)}</div></section>}
-function Rules(){return <section><div className="section-heading"><h2>大会ルール</h2></div><div className="rules-grid"><article><b>01</b><h3>対戦形式</h3><p>12名・予選全18試合。1人6試合出場し、上位・中位・下位4名ずつで順位決定戦を行います。</p></article><article><b>02</b><h3>予選同点</h3><p>①1位回数、②4位回数の少なさ、③サドンデス（ALL ALPHABET / ANOTHERランダム1曲）の順。合意により☆12等へ変更可能です。</p></article><article><b>03</b><h3>選曲</h3><p>☆8〜12のANOTHER / LEGGENDARIA。順位決定戦までの6回の出場で、同じ譜面を2回以上選べません。</p></article><article><b>04</b><h3>版権曲</h3><p>収益化停止曲は選曲できません。判断に迷う場合は当日スタッフへご相談ください。</p></article><article><b>05</b><h3>配信</h3><p>各試合で2名を配信台へ割り当て、予選を通して1人3試合ずつ配信対象にします。</p></article><article><b>06</b><h3>順位決定戦</h3><p>順位決定戦で同ptの場合は、予選順位が上のプレイヤーを上位とします。</p></article></div></section>}
-function Modal({children,onClose}:{children:React.ReactNode;onClose:()=>void}){return <div className="modal-backdrop" onMouseDown={(event)=>{if(event.target===event.currentTarget)onClose();}}><div className="modal"><button className="close" onClick={onClose}>×</button>{children}</div></div>}
+  async function load(tournamentId?: number) {
+    try {
+      setLoading(true);
+      setData(await loadTournament(tournamentId));
+      setError("");
+    } catch (caught) {
+      if (caught instanceof Error) setError(caught.message);
+      else setError("大会データの読み込みに失敗しました。");
+    } finally { setLoading(false); }
+  }
+
+  useEffect(() => { void load(requestedTournamentId); }, []);
+
+  // 呼び出し画面は別端末で表示されるため、5秒ごとに最新の呼び出し番号を取得します。
+  useEffect(() => {
+    if (!callMode) return;
+    const timer = window.setInterval(() => { void load(requestedTournamentId); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [callMode, requestedTournamentId]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    void supabase.auth.getSession().then(({ data: sessionData }) => setUser(sessionData.session?.user ?? null));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  /** 認証確認・エラー表示・再読込を共通化した更新処理です。 */
+  async function mutate(payload: MutationPayload): Promise<boolean> {
+    setBusy(true); setError("");
+    try {
+      if (!user) throw new Error("データを更新するには運営ログインが必要です。");
+      setData(await mutateTournament(payload, data.tournament?.id));
+      return true;
+    } catch (caught) {
+      if (caught instanceof Error) setError(caught.message);
+      else setError("保存に失敗しました。");
+      return false;
+    } finally { setBusy(false); }
+  }
+
+  const standings = useMemo(() => buildPreliminaryStandings(data), [data]);
+  const pastTournament = isPastTournament(data);
+  const canEdit = user !== null && (!pastTournament || archiveEditMode);
+  const preliminaryMatches = data.matches.filter((match) => match.stage === "preliminary");
+  const completedPlayerCount = standings.filter((standing) => standing.games >= 6).length;
+  const finalsReady = data.participants.length === 12 && completedPlayerCount === 12 && !standings.some((standing) => standing.suddenDeath);
+
+  if (callMode) {
+    if (loading) return <main className="call-board"><h1>読み込み中です…</h1></main>;
+    return <CallBoard data={data} />;
+  }
+
+  async function changeTournament(tournamentId: number) {
+    setArchiveEditMode(false); setTab("standings"); await load(tournamentId);
+  }
+
+  async function login(event: FormEvent) {
+    event.preventDefault();
+    if (!supabase) return;
+    setBusy(true); setError("");
+    const response = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPassword });
+    setBusy(false);
+    if (response.error) { setError("ログインできませんでした。メールアドレスとパスワードを確認してください。"); return; }
+    setLoginPassword(""); setShowLogin(false);
+  }
+
+  async function addParticipant(event: FormEvent) {
+    event.preventDefault();
+    if (await mutate({ action: "addParticipant", name: participantName })) setParticipantName("");
+  }
+
+  async function createTournament(event: FormEvent) {
+    event.preventDefault();
+    const saved = await mutate({ action: "createTournament", tournamentName, eventDate, isArchived: createAsArchive });
+    if (!saved) return;
+    setShowTournamentForm(false); setTournamentName(""); setEventDate("");
+    setArchiveEditMode(createAsArchive); setCreateAsArchive(false);
+    if (createAsArchive) setTab("players"); else setTab("standings");
+  }
+
+  function updateResultRow(index: number, field: keyof DraftRow, value: string) {
+    setResultRows((currentRows) => currentRows.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row));
+  }
+
+  async function saveMatch(event: FormEvent) {
+    event.preventDefault();
+    const saved = await mutate({ action: "addMatch", stage, results: resultRows.map((row) => ({ participantId: Number(row.participantId), points: Number(row.points), placement: Number(row.placement), selectedChart: row.selectedChart })) });
+    if (!saved) return;
+    setResultRows(createInitialResultRows()); setShowMatchForm(false); setTab("standings");
+  }
+
+  /** 組み合わせ表から結果入力を開く場合は、4名を入力済みの状態にします。 */
+  function prepareResultEntry(match: DrawMatch) {
+    setStage("preliminary");
+    setResultRows(match.participantIds.map((participantId, index) => ({ participantId: String(participantId), points: "", placement: String(index + 1), selectedChart: "" })));
+    setShowMatchForm(true);
+  }
+
+  async function createAutomaticDraw() {
+    if (data.tournament?.drawSchedule.length && !window.confirm("現在の組み合わせを破棄して再抽選しますか？")) return;
+    try { await mutate({ action: "saveDraw", drawSchedule: generatePreliminaryDraw(data.participants) }); }
+    catch (caught) { if (caught instanceof Error) setError(caught.message); else setError("組み合わせ抽選に失敗しました。"); }
+  }
+
+  function openCallBoard() {
+    if (!data.tournament) return;
+    window.open(`${window.location.pathname}?call=1&tournament=${data.tournament.id}`, "iidx-call-board");
+  }
+
+  return (
+    <main>
+      <Header data={data} user={user} canEdit={canEdit} onTournamentChange={(id) => void changeTournament(id)} onNewTournament={() => user ? setShowTournamentForm(true) : setShowLogin(true)} onNewResult={() => canEdit ? setShowMatchForm(true) : setShowLogin(true)} onLogin={() => setShowLogin(true)} onLogout={() => void supabase?.auth.signOut()} />
+      <Hero data={data} pastTournament={pastTournament} preliminaryMatchCount={preliminaryMatches.length} completedPlayerCount={completedPlayerCount} />
+
+      {error && <div className="error" role="alert"><span>{error}</span><button onClick={() => setError("")} aria-label="エラーを閉じる">×</button></div>}
+      {!isSupabaseConfigured && <div className="error">Supabaseの接続情報が未設定です。</div>}
+      {pastTournament && <ArchiveBanner user={user} editMode={archiveEditMode} onEnableEdit={() => user ? setArchiveEditMode(true) : setShowLogin(true)} onDisableEdit={() => setArchiveEditMode(false)} />}
+
+      <nav className="tabs" aria-label="大会メニュー">
+        {(Object.keys(tabLabels) as Tab[]).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{tabLabels[item]}</button>)}
+      </nav>
+
+      <div className="content">
+        {loading && <div className="empty">大会データを読み込んでいます…</div>}
+        {!loading && tab === "standings" && <StandingsPanel data={data} standings={standings} finalsReady={finalsReady} />}
+        {!loading && tab === "draw" && <DrawPanel data={data} pastTournament={pastTournament} canEdit={canEdit} busy={busy} onAutomaticDraw={() => void createAutomaticDraw()} onSaveManualDraw={(schedule) => mutate({ action: "saveDraw", drawSchedule: schedule })} onCall={(matchNumber) => void mutate({ action: "callMatch", calledMatchNumber: matchNumber })} onOpenCallBoard={openCallBoard} onResultEntry={prepareResultEntry} />}
+        {!loading && tab === "matches" && <MatchesPanel data={data} canEdit={canEdit} onNew={() => canEdit ? setShowMatchForm(true) : setShowLogin(true)} onDelete={(matchId) => void mutate({ action: "deleteMatch", matchId })} />}
+        {!loading && tab === "players" && <PlayersPanel data={data} standings={standings} canEdit={canEdit} name={participantName} setName={setParticipantName} onSubmit={addParticipant} onDelete={(participantId) => void mutate({ action: "deleteParticipant", participantId })} />}
+        {!loading && tab === "rules" && <RulesPanel />}
+      </div>
+
+      {showMatchForm && <ResultModal data={data} rows={resultRows} stage={stage} busy={busy} onStageChange={setStage} onRowChange={updateResultRow} onSubmit={saveMatch} onClose={() => setShowMatchForm(false)} />}
+      {showTournamentForm && <TournamentModal name={tournamentName} eventDate={eventDate} createAsArchive={createAsArchive} busy={busy} setName={setTournamentName} setEventDate={setEventDate} setCreateAsArchive={setCreateAsArchive} onSubmit={createTournament} onClose={() => setShowTournamentForm(false)} />}
+      {showLogin && <LoginModal email={loginEmail} password={loginPassword} busy={busy} setEmail={setLoginEmail} setPassword={setLoginPassword} onSubmit={login} onClose={() => setShowLogin(false)} />}
+    </main>
+  );
+}
+
+type HeaderProps = { data: TournamentData; user: User | null; canEdit: boolean; onTournamentChange: (id: number) => void; onNewTournament: () => void; onNewResult: () => void; onLogin: () => void; onLogout: () => void };
+
+function Header({ data, user, canEdit, onTournamentChange, onNewTournament, onNewResult, onLogin, onLogout }: HeaderProps) {
+  return (
+    <header className="topbar">
+      <div className="brand"><span>王</span><div><strong>IIDX 王決定戦</strong><small>大会運営・集計システム</small></div></div>
+      <div className="header-actions">
+        <label className="tournament-switcher"><span>表示する大会</span><select value={data.tournament?.id ?? ""} onChange={(event) => onTournamentChange(Number(event.target.value))}>{data.tournaments.map((tournament) => <option key={tournament.id} value={tournament.id}>{tournament.name}{tournament.isArchived ? "（過去回）" : ""}</option>)}</select></label>
+        <button className="secondary" onClick={onNewTournament}>大会を追加</button>
+        <button className="primary" onClick={onNewResult} disabled={!canEdit || data.participants.length < 4}>試合結果を入力</button>
+        {user && <button className="auth-button" onClick={onLogout}>ログアウト</button>}
+        {!user && <button className="auth-button" onClick={onLogin}>運営ログイン</button>}
+      </div>
+    </header>
+  );
+}
+
+function Hero({ data, pastTournament, preliminaryMatchCount, completedPlayerCount }: { data: TournamentData; pastTournament: boolean; preliminaryMatchCount: number; completedPlayerCount: number }) {
+  let statusLabel = "現在大会";
+  if (pastTournament) statusLabel = "過去大会の記録";
+  return <section className="hero"><div><p className="eyebrow">{statusLabel}</p><h1>{data.tournament?.name ?? "大会を登録してください"}</h1><p className="hero-description">{data.tournament?.eventDate || "開催日未登録"}　／　参加者・組み合わせ・試合結果を一つの画面で管理します。</p></div><div className="hero-status"><span>予選の進行状況</span><strong>{preliminaryMatchCount} / 18試合</strong><div className="progress-track"><i style={{ width: `${Math.min(100, preliminaryMatchCount / 18 * 100)}%` }} /></div><small>{completedPlayerCount} / 12名が6試合完了</small></div></section>;
+}
+
+function ArchiveBanner({ user, editMode, onEnableEdit, onDisableEdit }: { user: User | null; editMode: boolean; onEnableEdit: () => void; onDisableEdit: () => void }) {
+  return <section className={editMode ? "archive-banner editing" : "archive-banner"}><div><strong>{editMode ? "過去回を編集中です" : "過去回を閲覧しています"}</strong><p>{editMode ? "参加者、組み合わせ、試合結果を登録・修正できます。作業後は編集モードを終了してください。" : "誤操作を防ぐため、過去回は通常は閲覧専用です。"}</p></div>{!editMode && <button className="primary" onClick={onEnableEdit}>{user ? "過去回を編集" : "ログインして編集"}</button>}{editMode && <button onClick={onDisableEdit}>編集モードを終了</button>}</section>;
+}
+
+function StandingsPanel({ data, standings, finalsReady }: { data: TournamentData; standings: Standing[]; finalsReady: boolean }) {
+  return <section><div className="section-heading"><div><p className="eyebrow">予選集計</p><h2>予選順位表</h2></div><span>同点時：1位回数 → 4位回数の少なさ → サドンデス</span></div>{standings.length === 0 && <Empty message="参加者を登録すると順位表が表示されます。" />}{standings.length > 0 && <div className="ranking-table"><div className="ranking-head"><span>順位</span><span>プレイヤー</span><span>消化</span><span>1位</span><span>4位</span><span>合計pt</span></div>{standings.map((standing, index) => <div className="ranking-row" key={standing.id}><b>{index + 1}</b><strong>{standing.name}{standing.suddenDeath && <em className="sudden">サドンデス対象</em>}</strong><span>{standing.games} / 6</span><span>{standing.firsts}</span><span>{standing.fourths}</span><b className="point-value">{standing.points} pt</b></div>)}</div>}{data.participants.length === 12 && <div className="finals-grid">{(["king", "middle", "reverse"] as Stage[]).map((finalStage) => <article key={finalStage}><h3>{stageLabels[finalStage]}</h3>{buildFinalGroup(finalStage, data, standings).map((standing, index) => <div key={standing.id}><b>{index + 1}</b><span>{standing.name}</span><strong>{standing.finalPoints} pt</strong></div>)}{!finalsReady && <small>全員完走・サドンデス確定後に組分けします。</small>}</article>)}</div>}</section>;
+}
+
+type DrawPanelProps = { data: TournamentData; pastTournament: boolean; canEdit: boolean; busy: boolean; onAutomaticDraw: () => void; onSaveManualDraw: (schedule: DrawMatch[]) => Promise<boolean>; onCall: (matchNumber: number) => void; onOpenCallBoard: () => void; onResultEntry: (match: DrawMatch) => void };
+
+function DrawPanel({ data, pastTournament, canEdit, busy, onAutomaticDraw, onSaveManualDraw, onCall, onOpenCallBoard, onResultEntry }: DrawPanelProps) {
+  const schedule = data.tournament?.drawSchedule ?? [];
+  const streamCounts = new Map<number, number>();
+  schedule.forEach((match) => match.streamParticipantIds.forEach((id) => streamCounts.set(id, (streamCounts.get(id) ?? 0) + 1)));
+  const roundNumbers = [...new Set(schedule.map((match) => match.roundNumber))].sort((left, right) => left - right);
+
+  return <section><div className="section-heading"><div><p className="eyebrow">対戦管理</p><h2>組み合わせ</h2></div><div className="button-row">{!pastTournament && <button onClick={onOpenCallBoard} disabled={schedule.length === 0}>呼び出し画面を開く</button>}{!pastTournament && canEdit && <button className="primary" onClick={onAutomaticDraw} disabled={busy || data.participants.length !== 12}>{schedule.length > 0 ? "組み合わせを再抽選" : "18試合を自動抽選"}</button>}</div></div>{!pastTournament && data.participants.length !== 12 && <div className="notice">12名を登録すると自動抽選できます。現在は{data.participants.length}名です。</div>}{pastTournament && <ManualDrawEditor participants={data.participants} schedule={schedule} disabled={!canEdit || busy} onSave={onSaveManualDraw} />}{schedule.length > 0 && <><div className="stream-summary">{data.participants.map((participant) => <span key={participant.id}>{participant.name}<b>{streamCounts.get(participant.id) ?? 0}回配信</b></span>)}</div><div className="draw-rounds">{roundNumbers.map((roundNumber) => <article key={roundNumber}><h3>ラウンド {roundNumber}</h3>{schedule.filter((match) => match.roundNumber === roundNumber).sort((left, right) => left.matchNumber - right.matchNumber).map((match) => { let className = "draw-match"; if (data.tournament?.calledMatchNumber === match.matchNumber) className += " calling"; return <div className={className} key={match.matchNumber}><div className="draw-match-title"><strong>第{match.matchNumber}試合</strong><span>台番号 {match.tableNumber}</span></div><div className="draw-player-list">{match.participantIds.map((id) => <span key={id}>{playerName(data, id)}{match.streamParticipantIds.includes(id) && <i>配信</i>}</span>)}</div>{canEdit && <div className="row-actions">{!pastTournament && <button onClick={() => onCall(match.matchNumber)}>呼び出す</button>}<button onClick={() => onResultEntry(match)}>この試合の結果を入力</button></div>}</div>; })}</article>)}</div></>}</section>;
+}
+
+function MatchesPanel({ data, canEdit, onNew, onDelete }: { data: TournamentData; canEdit: boolean; onNew: () => void; onDelete: (matchId: number) => void }) {
+  return <section><div className="section-heading"><div><p className="eyebrow">登録済みデータ</p><h2>試合結果</h2></div>{canEdit && <button className="primary" onClick={onNew}>試合結果を追加</button>}</div>{data.matches.length === 0 && <Empty message="登録済みの試合結果はありません。" />}<div className="match-list">{[...data.matches].reverse().map((match) => <article key={match.id}><div className="match-title"><strong>{stageLabels[match.stage]} 第{match.roundNumber}試合</strong>{canEdit && <button className="danger-button" onClick={() => window.confirm("この試合結果を削除しますか？") && onDelete(match.id)}>削除</button>}</div>{data.results.filter((result) => result.matchId === match.id).sort((left, right) => left.placement - right.placement).map((result) => <div className="match-result" key={result.id}><b>{result.placement}位</b><span>{playerName(data, result.participantId)}</span><small>{result.selectedChart || "選曲未記録"}</small><strong>{result.points} pt</strong></div>)}</article>)}</div></section>;
+}
+
+function PlayersPanel({ data, standings, canEdit, name, setName, onSubmit, onDelete }: { data: TournamentData; standings: Standing[]; canEdit: boolean; name: string; setName: (value: string) => void; onSubmit: (event: FormEvent) => void; onDelete: (participantId: number) => void }) {
+  return <section><div className="section-heading"><div><p className="eyebrow">エントリー</p><h2>参加者</h2></div><strong>{data.participants.length} / 12名</strong></div><form className="entry-form" onSubmit={onSubmit}><label><span>プレイヤー名</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="DJ NAME" maxLength={30} disabled={!canEdit || data.participants.length >= 12} /></label><button className="primary" disabled={!canEdit || data.participants.length >= 12}>参加者を追加</button></form><div className="player-grid">{data.participants.map((participant) => { const standing = standings.find((item) => item.id === participant.id); return <article key={participant.id}><i>{participant.name.slice(0, 1).toUpperCase()}</i><div><strong>{participant.name}</strong><span>{standing?.games ?? 0}試合・{standing?.points ?? 0}pt</span></div>{canEdit && <button className="danger-button" onClick={() => window.confirm(`${participant.name}を削除しますか？`) && onDelete(participant.id)}>削除</button>}</article>; })}</div></section>;
+}
+
+function RulesPanel() {
+  return <section><div className="section-heading"><div><p className="eyebrow">大会規定</p><h2>大会ルール</h2></div></div><div className="rules-grid"><article><b>01</b><h3>対戦形式</h3><p>12名で予選全18試合を実施します。1人6試合出場し、上位・中位・下位4名ずつで順位決定戦を行います。</p></article><article><b>02</b><h3>予選同点</h3><p>1位回数、4位回数の少なさ、サドンデスの順で順位を決定します。サドンデスの条件は当日の合意により変更できます。</p></article><article><b>03</b><h3>選曲</h3><p>☆8～12のANOTHER・LEGGENDARIAが対象です。同じ譜面を2回以上選曲することはできません。</p></article><article><b>04</b><h3>版権曲</h3><p>収益化停止曲は選曲できません。判断に迷う場合は当日スタッフへご相談ください。</p></article><article><b>05</b><h3>配信台</h3><p>各試合で2名を配信台へ割り当て、予選を通して1人3試合ずつ配信対象にします。</p></article><article><b>06</b><h3>順位決定戦</h3><p>順位決定戦で同ptの場合は、予選順位が上のプレイヤーを上位とします。</p></article></div></section>;
+}
+
+function ResultModal({ data, rows, stage, busy, onStageChange, onRowChange, onSubmit, onClose }: { data: TournamentData; rows: DraftRow[]; stage: Stage; busy: boolean; onStageChange: (stage: Stage) => void; onRowChange: (index: number, field: keyof DraftRow, value: string) => void; onSubmit: (event: FormEvent) => void; onClose: () => void }) {
+  return <Modal onClose={onClose}><form onSubmit={onSubmit}><p className="dialog-kicker">試合データ</p><h2>試合結果を入力</h2><label className="field"><span>試合区分</span><select value={stage} onChange={(event) => onStageChange(event.target.value as Stage)}>{Object.entries(stageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><div className="result-rows">{rows.map((row, index) => { const usedCharts = data.results.filter((result) => result.participantId === Number(row.participantId)).map((result) => result.selectedChart.trim().toLowerCase()); const duplicateChart = row.selectedChart.trim().length > 0 && usedCharts.includes(row.selectedChart.trim().toLowerCase()); return <div className="result-row" key={index}><label><span>順位</span><select value={row.placement} onChange={(event) => onRowChange(index, "placement", event.target.value)}>{[1, 2, 3, 4].map((place) => <option key={place} value={place}>{place}位</option>)}</select></label><label><span>参加者</span><select required value={row.participantId} onChange={(event) => onRowChange(index, "participantId", event.target.value)}><option value="">選択してください</option>{data.participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.name}</option>)}</select></label><label><span>獲得pt</span><input required type="number" min="0" value={row.points} onChange={(event) => onRowChange(index, "points", event.target.value)} /></label><label><span>選曲譜面</span><input value={row.selectedChart} onChange={(event) => onRowChange(index, "selectedChart", event.target.value)} placeholder="曲名 [A/L]" />{duplicateChart && <small className="field-warning">この譜面は登録済みです。</small>}</label></div>; })}</div><div className="modal-actions"><button type="button" onClick={onClose}>キャンセル</button><button className="primary" disabled={busy}>結果を保存</button></div></form></Modal>;
+}
+
+function TournamentModal({ name, eventDate, createAsArchive, busy, setName, setEventDate, setCreateAsArchive, onSubmit, onClose }: { name: string; eventDate: string; createAsArchive: boolean; busy: boolean; setName: (value: string) => void; setEventDate: (value: string) => void; setCreateAsArchive: (value: boolean) => void; onSubmit: (event: FormEvent) => void; onClose: () => void }) {
+  return <Modal onClose={onClose}><form onSubmit={onSubmit}><p className="dialog-kicker">大会データの作成</p><h2>新しい大会を登録</h2><label className="field"><span>大会名</span><input required maxLength={60} value={name} onChange={(event) => setName(event.target.value)} placeholder="例：第2回 IIDX 王決定戦" /></label><label className="field"><span>開催日</span><input type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} /></label><label className="archive-checkbox"><input type="checkbox" checked={createAsArchive} onChange={(event) => setCreateAsArchive(event.target.checked)} /><span><strong>過去回として登録する</strong><small>参加者・組み合わせ・結果を後から手動入力できます。</small></span></label><div className="modal-actions"><button type="button" onClick={onClose}>キャンセル</button><button className="primary" disabled={busy}>大会を登録</button></div></form></Modal>;
+}
+
+function LoginModal({ email, password, busy, setEmail, setPassword, onSubmit, onClose }: { email: string; password: string; busy: boolean; setEmail: (value: string) => void; setPassword: (value: string) => void; onSubmit: (event: FormEvent) => void; onClose: () => void }) {
+  return <Modal onClose={onClose}><form onSubmit={onSubmit}><p className="dialog-kicker">運営者専用</p><h2>運営ログイン</h2><label className="field"><span>メールアドレス</span><input required type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label className="field"><span>パスワード</span><input required type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><div className="modal-actions"><button type="button" onClick={onClose}>キャンセル</button><button className="primary" disabled={busy}>ログイン</button></div></form></Modal>;
+}
+
+function Modal({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal" role="dialog" aria-modal="true"><button className="close" onClick={onClose} aria-label="画面を閉じる">×</button>{children}</div></div>;
+}
+
+function Empty({ message }: { message: string }) { return <div className="empty">{message}</div>; }
