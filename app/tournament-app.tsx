@@ -107,6 +107,39 @@ export default function TournamentApp() {
 
   useEffect(() => { void load(requestedTournamentId); }, []);
 
+  // OBSで常時表示する画面はポーリングせず、表示対象のDB更新が届いたときだけ再取得します。
+  useEffect(() => {
+    const tournamentId = data.tournament?.id;
+    const realtimeClient = supabase;
+    if (!callMode || !realtimeClient || !tournamentId) return;
+
+    async function refreshCallBoard() {
+      try {
+        // 初回読込後はloadingを変更せず、配信映像を空画面へ切り替えずに差し替えます。
+        setData(await loadTournament(tournamentId));
+      } catch (caught) {
+        if (caught instanceof Error) setError(caught.message);
+        else setError("配信用表示の更新に失敗しました。");
+      }
+    }
+
+    const channel = realtimeClient
+      .channel(`call-board-${tournamentId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "tournaments",
+          filter: `id=eq.${tournamentId}`,
+        },
+        () => { void refreshCallBoard(); },
+      )
+      .subscribe();
+
+    return () => { void realtimeClient.removeChannel(channel); };
+  }, [callMode, data.tournament?.id]);
+
   useEffect(() => {
     if (!supabase) return;
     void supabase.auth.getSession().then(({ data: sessionData }) => setUser(sessionData.session?.user ?? null));

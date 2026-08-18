@@ -109,6 +109,21 @@ create policy "participants_operator_write" on public.participants for all to au
 create policy "matches_operator_write" on public.matches for all to authenticated using (true) with check (true);
 create policy "results_operator_write" on public.results for all to authenticated using (true) with check (true);
 
+-- 配信用画面は定期通信を行わず、表示対象が変わった瞬間だけ大会データを再取得します。
+-- 既にPublicationへ登録済みの場合もSQL全体を再実行できるよう、存在確認を行います。
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname='supabase_realtime'
+      and schemaname='public'
+      and tablename='tournaments'
+  ) then
+    execute 'alter publication supabase_realtime add table public.tournaments';
+  end if;
+end $$;
+
 -- 1試合と4名分の結果を同じトランザクションで登録します。
 create or replace function public.create_match_with_results(
   p_tournament_id bigint, p_stage text, p_results jsonb
