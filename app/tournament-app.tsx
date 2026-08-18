@@ -135,6 +135,7 @@ export default function TournamentApp() {
   const standings = useMemo(() => buildPreliminaryStandings(data), [data]);
   const pastTournament = isPastTournament(data);
   const canEdit = user !== null && (!pastTournament || archiveEditMode);
+  const chartInputEnabled = pastTournament && archiveEditMode;
   const preliminaryMatches = data.matches.filter((match) => match.stage === "preliminary");
   const completedPlayerCount = standings.filter((standing) => standing.games >= 6).length;
   const finalsReady = data.participants.length === 12 && completedPlayerCount === 12 && !standings.some((standing) => standing.suddenDeath);
@@ -178,7 +179,17 @@ export default function TournamentApp() {
 
   async function saveMatch(event: FormEvent) {
     event.preventDefault();
-    const saved = await mutate({ action: "addMatch", stage, results: resultRows.map((row) => ({ participantId: Number(row.participantId), points: Number(row.points), placement: Number(row.placement), selectedChart: row.selectedChart })) });
+    const saved = await mutate({
+      action: "addMatch",
+      stage,
+      results: resultRows.map((row) => ({
+        participantId: Number(row.participantId),
+        points: Number(row.points),
+        placement: Number(row.placement),
+        // 通常運営では、以前の入力状態が残っていても楽曲情報を保存しません。
+        selectedChart: chartInputEnabled ? row.selectedChart : "",
+      })),
+    });
     if (!saved) return;
     setResultRows(createInitialResultRows()); setShowMatchForm(false); setTab("standings");
   }
@@ -223,7 +234,7 @@ export default function TournamentApp() {
         {!loading && tab === "rules" && <RulesPanel />}
       </div>
 
-      {showMatchForm && <ResultModal data={data} rows={resultRows} stage={stage} busy={busy} onStageChange={setStage} onRowChange={updateResultRow} onSubmit={saveMatch} onClose={() => setShowMatchForm(false)} />}
+      {showMatchForm && <ResultModal data={data} rows={resultRows} stage={stage} busy={busy} showChartInput={chartInputEnabled} onStageChange={setStage} onRowChange={updateResultRow} onSubmit={saveMatch} onClose={() => setShowMatchForm(false)} />}
       {showTournamentForm && <TournamentModal name={tournamentName} eventDate={eventDate} createAsArchive={createAsArchive} busy={busy} setName={setTournamentName} setEventDate={setEventDate} setCreateAsArchive={setCreateAsArchive} onSubmit={createTournament} onClose={() => setShowTournamentForm(false)} />}
       {showLogin && <LoginModal email={loginEmail} password={loginPassword} busy={busy} setEmail={setLoginEmail} setPassword={setLoginPassword} onSubmit={login} onClose={() => setShowLogin(false)} />}
     </main>
@@ -284,8 +295,77 @@ function RulesPanel() {
   return <section><div className="section-heading"><div><p className="eyebrow">大会規定</p><h2>大会ルール</h2></div></div><div className="rules-grid"><article><b>01</b><h3>対戦形式</h3><p>12名で予選全18試合を実施します。1人6試合出場し、上位・中位・下位4名ずつで順位決定戦を行います。</p></article><article><b>02</b><h3>予選同点</h3><p>1位回数、4位回数の少なさ、サドンデスの順で順位を決定します。サドンデスの条件は当日の合意により変更できます。</p></article><article><b>03</b><h3>選曲</h3><p>☆8～12のANOTHER・LEGGENDARIAが対象です。同じ譜面を2回以上選曲することはできません。</p></article><article><b>04</b><h3>版権曲</h3><p>収益化停止曲は選曲できません。判断に迷う場合は当日スタッフへご相談ください。</p></article><article><b>05</b><h3>配信台</h3><p>各試合で2名を配信台へ割り当て、予選を通して1人3試合ずつ配信対象にします。</p></article><article><b>06</b><h3>順位決定戦</h3><p>順位決定戦で同ptの場合は、予選順位が上のプレイヤーを上位とします。</p></article></div></section>;
 }
 
-function ResultModal({ data, rows, stage, busy, onStageChange, onRowChange, onSubmit, onClose }: { data: TournamentData; rows: DraftRow[]; stage: Stage; busy: boolean; onStageChange: (stage: Stage) => void; onRowChange: (index: number, field: keyof DraftRow, value: string) => void; onSubmit: (event: FormEvent) => void; onClose: () => void }) {
-  return <Modal onClose={onClose}><form onSubmit={onSubmit}><p className="dialog-kicker">試合データ</p><h2>試合結果を入力</h2><label className="field"><span>試合区分</span><select value={stage} onChange={(event) => onStageChange(event.target.value as Stage)}>{Object.entries(stageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><div className="result-rows">{rows.map((row, index) => { const usedCharts = data.results.filter((result) => result.participantId === Number(row.participantId)).map((result) => result.selectedChart.trim().toLowerCase()); const duplicateChart = row.selectedChart.trim().length > 0 && usedCharts.includes(row.selectedChart.trim().toLowerCase()); return <div className="result-row" key={index}><label><span>順位</span><select value={row.placement} onChange={(event) => onRowChange(index, "placement", event.target.value)}>{[1, 2, 3, 4].map((place) => <option key={place} value={place}>{place}位</option>)}</select></label><label><span>参加者</span><select required value={row.participantId} onChange={(event) => onRowChange(index, "participantId", event.target.value)}><option value="">選択してください</option>{data.participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.name}</option>)}</select></label><label><span>獲得pt</span><input required type="number" min="0" value={row.points} onChange={(event) => onRowChange(index, "points", event.target.value)} /></label><label><span>選曲譜面</span><input value={row.selectedChart} onChange={(event) => onRowChange(index, "selectedChart", event.target.value)} placeholder="曲名 [A/L]" />{duplicateChart && <small className="field-warning">この譜面は登録済みです。</small>}</label></div>; })}</div><div className="modal-actions"><button type="button" onClick={onClose}>キャンセル</button><button className="primary" disabled={busy}>結果を保存</button></div></form></Modal>;
+type ResultModalProps = {
+  data: TournamentData;
+  rows: DraftRow[];
+  stage: Stage;
+  busy: boolean;
+  showChartInput: boolean;
+  onStageChange: (stage: Stage) => void;
+  onRowChange: (index: number, field: keyof DraftRow, value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+  onClose: () => void;
+};
+
+function ResultModal({ data, rows, stage, busy, showChartInput, onStageChange, onRowChange, onSubmit, onClose }: ResultModalProps) {
+  return (
+    <Modal onClose={onClose}>
+      <form onSubmit={onSubmit}>
+        <p className="dialog-kicker">試合データ</p>
+        <h2>試合結果を入力</h2>
+        <label className="field">
+          <span>試合区分</span>
+          <select value={stage} onChange={(event) => onStageChange(event.target.value as Stage)}>
+            {Object.entries(stageLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+        <p className="form-help">同率だった場合は、複数の参加者に同じ順位を設定できます。</p>
+        <div className="result-rows">
+          {rows.map((row, index) => {
+            // 選曲履歴は過去資料の保存用途に限定し、通常運営では入力項目自体を表示しません。
+            const usedCharts = data.results
+              .filter((result) => result.participantId === Number(row.participantId))
+              .map((result) => result.selectedChart.trim().toLowerCase());
+            const normalizedChart = row.selectedChart.trim().toLowerCase();
+            const duplicateChart = normalizedChart.length > 0 && usedCharts.includes(normalizedChart);
+
+            return (
+              <div className={showChartInput ? "result-row" : "result-row result-row-without-chart"} key={index}>
+                <label>
+                  <span>順位（同率可）</span>
+                  <select value={row.placement} onChange={(event) => onRowChange(index, "placement", event.target.value)}>
+                    {[1, 2, 3, 4].map((place) => <option key={place} value={place}>{place}位</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>参加者</span>
+                  <select required value={row.participantId} onChange={(event) => onRowChange(index, "participantId", event.target.value)}>
+                    <option value="">選択してください</option>
+                    {data.participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>獲得pt</span>
+                  <input required type="number" min="0" value={row.points} onChange={(event) => onRowChange(index, "points", event.target.value)} />
+                </label>
+                {showChartInput && (
+                  <label>
+                    <span>選曲譜面</span>
+                    <input value={row.selectedChart} onChange={(event) => onRowChange(index, "selectedChart", event.target.value)} placeholder="曲名 [A/L]" />
+                    {duplicateChart && <small className="field-warning">この譜面は登録済みです。</small>}
+                  </label>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>キャンセル</button>
+          <button className="primary" disabled={busy}>結果を保存</button>
+        </div>
+      </form>
+    </Modal>
+  );
 }
 
 function TournamentModal({ name, eventDate, createAsArchive, busy, setName, setEventDate, setCreateAsArchive, onSubmit, onClose }: { name: string; eventDate: string; createAsArchive: boolean; busy: boolean; setName: (value: string) => void; setEventDate: (value: string) => void; setCreateAsArchive: (value: boolean) => void; onSubmit: (event: FormEvent) => void; onClose: () => void }) {

@@ -161,6 +161,8 @@ label > span, legend { color: #344156; font-size: 14px; font-weight: 700; }
 .archive-checkbox small { color: var(--muted); font-weight: 400; }
 .result-rows { display: grid; gap: 10px; }
 .result-row { display: grid; grid-template-columns: 90px minmax(150px, 1fr) 110px minmax(160px, 1fr); gap: 9px; padding: 12px; border: 1px solid #e1e6ec; border-radius: 8px; background: #f9fafc; }
+.result-row-without-chart { grid-template-columns: 120px minmax(180px, 1fr) 130px; }
+.form-help { margin: -2px 0 12px; color: var(--muted); font-size: 14px; }
 .field-warning { color: var(--danger); }
 
 /* 会場呼び出し専用画面 */

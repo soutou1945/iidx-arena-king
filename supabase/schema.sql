@@ -40,8 +40,12 @@ create table if not exists public.results (
   points integer not null check (points >= 0),
   placement integer not null check (placement between 1 and 4),
   selected_chart text not null default '',
-  unique (match_id, participant_id), unique (match_id, placement)
+  unique (match_id, participant_id)
 );
+
+-- アリーナでは同率順位が発生するため、1試合内の順位は重複を許可します。
+-- 旧スキーマで自動生成された一意制約も、再実行時に安全に解除します。
+alter table public.results drop constraint if exists results_match_id_placement_key;
 
 -- 大文字小文字と前後空白を無視し、自身が同じ譜面を再選曲することを禁止します。
 create unique index if not exists results_participant_chart_unique
@@ -96,8 +100,11 @@ begin
   if (select count(distinct participant_id) from jsonb_to_recordset(p_results) as x(participant_id bigint)) <> 4 then
     raise exception '異なる4名を選択してください。';
   end if;
-  if (select count(distinct placement) from jsonb_to_recordset(p_results) as x(placement integer) where placement between 1 and 4) <> 4 then
-    raise exception '順位は1位から4位を1人ずつ指定してください。';
+  if exists (
+    select 1 from jsonb_to_recordset(p_results) as x(placement integer)
+    where placement is null or placement not between 1 and 4
+  ) then
+    raise exception '順位は1位から4位の範囲で指定してください。';
   end if;
   if (select count(*) from public.participants where tournament_id=p_tournament_id and id in
       (select participant_id from jsonb_to_recordset(p_results) as x(participant_id bigint))) <> 4 then
