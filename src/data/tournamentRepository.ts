@@ -198,6 +198,21 @@ export async function mutateTournament(payload:MutationPayload,tournamentId?:num
   }else if(payload.action==="addMatch"){
     if(!payload.stage || !payload.results) throw new Error("試合結果が不足しています。");
     const response=await client.rpc("create_match_with_results",{p_tournament_id:tournamentId,p_stage:payload.stage,p_results:payload.results.map((row)=>({participant_id:row.participantId,points:row.points,placement:row.placement,selected_chart:row.selectedChart.trim()}))}); assertSuccess(response.error);
+  }else if(payload.action==="updateMatch"){
+    if(!payload.matchId || !payload.stage || !payload.results) throw new Error("更新する試合結果が不足しています。");
+    // 試合と4名分の結果は、途中状態を残さないようDB関数内の1トランザクションで更新します。
+    const response=await client.rpc("update_match_with_results",{
+      p_tournament_id:tournamentId,
+      p_match_id:payload.matchId,
+      p_stage:payload.stage,
+      p_results:payload.results.map((row)=>({
+        participant_id:row.participantId,
+        points:row.points,
+        placement:row.placement,
+        selected_chart:row.selectedChart.trim(),
+      })),
+    });
+    assertSuccess(response.error);
   }else if(payload.action==="deleteMatch"){
     const response=await client.from("matches").delete().eq("id",payload.matchId ?? 0).eq("tournament_id",tournamentId); assertSuccess(response.error);
   }else if(payload.action==="saveDraw"){

@@ -163,3 +163,59 @@ begin
 end; $$;
 revoke all on function public.create_match_with_results(bigint,text,jsonb) from public;
 grant execute on function public.create_match_with_results(bigint,text,jsonb) to authenticated;
+
+-- 登録済みの試合と4名分の結果を、途中状態を見せずにまとめて修正します。
+create or replace function public.update_match_with_results(
+  p_tournament_id bigint, p_match_id bigint, p_stage text, p_results jsonb
+) returns void language plpgsql security definer set search_path = public as $$
+declare v_current_stage text; v_round_number integer;
+begin
+  if auth.uid() is null then raise exception '運営ログインが必要です。'; end if;
+  if p_stage not in ('preliminary','king','middle','reverse') then raise exception '試合区分が不正です。'; end if;
+  if jsonb_array_length(p_results) <> 4 then raise exception '4人分の結果を入力してください。'; end if;
+  if (select count(distinct participant_id) from jsonb_to_recordset(p_results) as x(participant_id bigint)) <> 4 then
+    raise exception '異なる4名を選択してください。';
+  end if;
+  if exists (
+    select 1 from jsonb_to_recordset(p_results) as x(placement integer)
+    where placement is null or placement not between 1 and 4
+  ) then
+    raise exception '順位は1位から4位の範囲で指定してください。';
+  end if;
+  if (select count(*) from public.participants where tournament_id=p_tournament_id and id in
+      (select participant_id from jsonb_to_recordset(p_results) as x(participant_id bigint))) <> 4 then
+    raise exception '選択した参加者が大会に登録されていません。';
+  end if;
+
+  select stage into v_current_stage
+  from public.matches
+  where id=p_match_id and tournament_id=p_tournament_id;
+  if not found then raise exception '更新する試合が見つかりません。'; end if;
+
+  if p_stage='preliminary' and (
+    select count(*) from public.matches
+    where tournament_id=p_tournament_id and stage='preliminary' and id<>p_match_id
+  ) >= 18 then
+    raise exception '予選は全18試合までです。';
+  end if;
+  if p_stage='preliminary' and exists (
+    select 1 from jsonb_to_recordset(p_results) as x(participant_id bigint)
+    where (select count(*) from public.results r join public.matches m on m.id=r.match_id
+      where r.participant_id=x.participant_id and m.tournament_id=p_tournament_id
+        and m.stage='preliminary' and m.id<>p_match_id) >= 6
+  ) then raise exception '予選は1人6試合までです。'; end if;
+
+  -- 試合区分を変更した場合だけ、変更先区分の末尾へ試合番号を振り直します。
+  if v_current_stage<>p_stage then
+    select coalesce(max(round_number),0)+1 into v_round_number
+    from public.matches where tournament_id=p_tournament_id and stage=p_stage;
+    update public.matches set stage=p_stage,round_number=v_round_number where id=p_match_id;
+  end if;
+
+  delete from public.results where match_id=p_match_id;
+  insert into public.results(match_id,participant_id,points,placement,selected_chart)
+    select p_match_id,participant_id,points,placement,coalesce(selected_chart,'')
+    from jsonb_to_recordset(p_results) as x(participant_id bigint,points integer,placement integer,selected_chart text);
+end; $$;
+revoke all on function public.update_match_with_results(bigint,bigint,text,jsonb) from public;
+grant execute on function public.update_match_with_results(bigint,bigint,text,jsonb) to authenticated;

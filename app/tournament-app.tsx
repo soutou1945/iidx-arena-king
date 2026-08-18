@@ -5,7 +5,7 @@ import { loadTournament, mutateTournament } from "../src/data/tournamentReposito
 import { generatePreliminaryDraw } from "../src/lib/draw";
 import { buildFinalGroup, buildPreliminaryStandings, stageLabels, type Standing } from "../src/lib/standings";
 import { isSupabaseConfigured, supabase } from "../src/lib/supabase";
-import { emptyTournamentData, type DrawMatch, type MutationPayload, type Participant, type Stage, type TournamentData } from "../src/types";
+import { emptyTournamentData, type DrawMatch, type Match, type MutationPayload, type Participant, type Stage, type TournamentData } from "../src/types";
 
 type Tab = "standings" | "draw" | "matches" | "players" | "rules";
 type DraftRow = { participantId: string; points: string; placement: string; selectedChart: string };
@@ -91,6 +91,7 @@ export default function TournamentApp() {
   const [eventDate, setEventDate] = useState("");
   const [createAsArchive, setCreateAsArchive] = useState(false);
   const [showMatchForm, setShowMatchForm] = useState(false);
+  const [editingMatchId, setEditingMatchId] = useState<number | null>(null);
   const [stage, setStage] = useState<Stage>("preliminary");
   const [resultRows, setResultRows] = useState<DraftRow[]>(createInitialResultRows);
 
@@ -203,8 +204,10 @@ export default function TournamentApp() {
 
   async function saveMatch(event: FormEvent) {
     event.preventDefault();
+    const matchAction = editingMatchId === null ? "addMatch" : "updateMatch";
     const saved = await mutate({
-      action: "addMatch",
+      action: matchAction,
+      matchId: editingMatchId ?? undefined,
       stage,
       results: resultRows.map((row) => ({
         participantId: Number(row.participantId),
@@ -215,13 +218,55 @@ export default function TournamentApp() {
       })),
     });
     if (!saved) return;
-    setResultRows(createInitialResultRows()); setShowMatchForm(false); setTab("standings");
+    const nextTab = editingMatchId === null ? "standings" : "matches";
+    setEditingMatchId(null);
+    setResultRows(createInitialResultRows());
+    setShowMatchForm(false);
+    setTab(nextTab);
+  }
+
+  function openNewResult() {
+    setEditingMatchId(null);
+    setStage("preliminary");
+    setResultRows(createInitialResultRows());
+    setShowMatchForm(true);
+  }
+
+  function closeResultForm() {
+    setEditingMatchId(null);
+    setResultRows(createInitialResultRows());
+    setShowMatchForm(false);
   }
 
   /** 組み合わせ表から結果入力を開く場合は、4名を入力済みの状態にします。 */
   function prepareResultEntry(match: DrawMatch) {
+    setEditingMatchId(null);
     setStage("preliminary");
     setResultRows(match.participantIds.map((participantId, index) => ({ participantId: String(participantId), points: "", placement: String(index + 1), selectedChart: "" })));
+    setShowMatchForm(true);
+  }
+
+  /** 登録済みの4名分を入力欄へ戻し、同じ試合IDのまま修正できるようにします。 */
+  function prepareMatchEdit(match: Match) {
+    const existingResults = data.results
+      .filter((result) => result.matchId === match.id)
+      .sort((left, right) => {
+        if (left.placement !== right.placement) return left.placement - right.placement;
+        return left.id - right.id;
+      });
+    if (existingResults.length !== 4) {
+      setError("この試合は4名分の結果が揃っていないため編集できません。");
+      return;
+    }
+
+    setEditingMatchId(match.id);
+    setStage(match.stage);
+    setResultRows(existingResults.map((result) => ({
+      participantId: String(result.participantId),
+      points: String(result.points),
+      placement: String(result.placement),
+      selectedChart: result.selectedChart,
+    })));
     setShowMatchForm(true);
   }
 
@@ -238,7 +283,7 @@ export default function TournamentApp() {
 
   return (
     <main>
-      <Header data={data} user={user} canEdit={canEdit} onTournamentChange={(id) => void changeTournament(id)} onNewTournament={() => user ? setShowTournamentForm(true) : setShowLogin(true)} onNewResult={() => canEdit ? setShowMatchForm(true) : setShowLogin(true)} onLogin={() => setShowLogin(true)} onLogout={() => void supabase?.auth.signOut()} />
+      <Header data={data} user={user} canEdit={canEdit} onTournamentChange={(id) => void changeTournament(id)} onNewTournament={() => user ? setShowTournamentForm(true) : setShowLogin(true)} onNewResult={() => canEdit ? openNewResult() : setShowLogin(true)} onLogin={() => setShowLogin(true)} onLogout={() => void supabase?.auth.signOut()} />
       <Hero data={data} pastTournament={pastTournament} preliminaryMatchCount={preliminaryMatches.length} completedPlayerCount={completedPlayerCount} />
 
       {error && <div className="error" role="alert"><span>{error}</span><button onClick={() => setError("")} aria-label="エラーを閉じる">×</button></div>}
@@ -253,12 +298,12 @@ export default function TournamentApp() {
         {loading && <div className="empty">大会データを読み込んでいます…</div>}
         {!loading && tab === "standings" && <StandingsPanel data={data} standings={standings} finalsReady={finalsReady} />}
         {!loading && tab === "draw" && <DrawPanel data={data} pastTournament={pastTournament} canEdit={canEdit} busy={busy} onAutomaticDraw={() => void createAutomaticDraw()} onSaveManualDraw={(schedule) => mutate({ action: "saveDraw", drawSchedule: schedule })} onCall={(matchNumber) => void mutate({ action: "callMatch", calledMatchNumber: matchNumber })} onOpenCallBoard={openCallBoard} onResultEntry={prepareResultEntry} />}
-        {!loading && tab === "matches" && <MatchesPanel data={data} canEdit={canEdit} onNew={() => canEdit ? setShowMatchForm(true) : setShowLogin(true)} onDelete={(matchId) => void mutate({ action: "deleteMatch", matchId })} />}
+        {!loading && tab === "matches" && <MatchesPanel data={data} canEdit={canEdit} onNew={openNewResult} onEdit={prepareMatchEdit} onDelete={(matchId) => void mutate({ action: "deleteMatch", matchId })} />}
         {!loading && tab === "players" && <PlayersPanel data={data} standings={standings} canEdit={canEdit} busy={busy} onAdd={(name, title, imageFile) => mutate({ action: "addParticipant", name, title, imageFile })} onUpdate={(participantId, name, title, imageFile, removeImage) => mutate({ action: "updateParticipant", participantId, name, title, imageFile, removeImage })} onDelete={(participantId) => void mutate({ action: "deleteParticipant", participantId })} />}
         {!loading && tab === "rules" && <RulesPanel />}
       </div>
 
-      {showMatchForm && <ResultModal data={data} rows={resultRows} stage={stage} busy={busy} showChartInput={chartInputEnabled} onStageChange={setStage} onRowChange={updateResultRow} onSubmit={saveMatch} onClose={() => setShowMatchForm(false)} />}
+      {showMatchForm && <ResultModal data={data} rows={resultRows} stage={stage} busy={busy} editing={editingMatchId !== null} showChartInput={chartInputEnabled} onStageChange={setStage} onRowChange={updateResultRow} onSubmit={saveMatch} onClose={closeResultForm} />}
       {showTournamentForm && <TournamentModal name={tournamentName} eventDate={eventDate} createAsArchive={createAsArchive} busy={busy} setName={setTournamentName} setEventDate={setEventDate} setCreateAsArchive={setCreateAsArchive} onSubmit={createTournament} onClose={() => setShowTournamentForm(false)} />}
       {showLogin && <LoginModal email={loginEmail} password={loginPassword} busy={busy} setEmail={setLoginEmail} setPassword={setLoginPassword} onSubmit={login} onClose={() => setShowLogin(false)} />}
     </main>
@@ -307,8 +352,50 @@ function DrawPanel({ data, pastTournament, canEdit, busy, onAutomaticDraw, onSav
   return <section><div className="section-heading"><div><p className="eyebrow">対戦管理</p><h2>組み合わせ</h2></div><div className="button-row">{!pastTournament && <button onClick={onOpenCallBoard} disabled={schedule.length === 0}>配信用表示を開く</button>}{!pastTournament && canEdit && <button className="primary" onClick={onAutomaticDraw} disabled={busy || data.participants.length !== 12}>{schedule.length > 0 ? "組み合わせを再抽選" : "18試合を自動抽選"}</button>}</div></div>{!pastTournament && data.participants.length !== 12 && <div className="notice">12名を登録すると自動抽選できます。現在は{data.participants.length}名です。</div>}{pastTournament && <ManualDrawEditor participants={data.participants} schedule={schedule} disabled={!canEdit || busy} onSave={onSaveManualDraw} />}{schedule.length > 0 && <><div className="stream-summary">{data.participants.map((participant) => <span key={participant.id}>{participant.name}<b>{streamCounts.get(participant.id) ?? 0}回配信</b></span>)}</div><div className="draw-rounds">{roundNumbers.map((roundNumber) => <article key={roundNumber}><h3>ラウンド {roundNumber}</h3>{schedule.filter((match) => match.roundNumber === roundNumber).sort((left, right) => left.matchNumber - right.matchNumber).map((match) => { let className = "draw-match"; if (data.tournament?.calledMatchNumber === match.matchNumber) className += " calling"; return <div className={className} key={match.matchNumber}><div className="draw-match-title"><strong>第{match.matchNumber}試合</strong><span>台番号 {match.tableNumber}</span></div><div className="draw-player-list">{match.participantIds.map((id) => <span key={id}>{playerName(data, id)}{match.streamParticipantIds.includes(id) && <i>配信</i>}</span>)}</div>{canEdit && <div className="row-actions">{!pastTournament && <button onClick={() => onCall(match.matchNumber)}>表示対象にする</button>}<button onClick={() => onResultEntry(match)}>この試合の結果を入力</button></div>}</div>; })}</article>)}</div></>}</section>;
 }
 
-function MatchesPanel({ data, canEdit, onNew, onDelete }: { data: TournamentData; canEdit: boolean; onNew: () => void; onDelete: (matchId: number) => void }) {
-  return <section><div className="section-heading"><div><p className="eyebrow">登録済みデータ</p><h2>試合結果</h2></div>{canEdit && <button className="primary" onClick={onNew}>試合結果を追加</button>}</div>{data.matches.length === 0 && <Empty message="登録済みの試合結果はありません。" />}<div className="match-list">{[...data.matches].reverse().map((match) => <article key={match.id}><div className="match-title"><strong>{stageLabels[match.stage]} 第{match.roundNumber}試合</strong>{canEdit && <button className="danger-button" onClick={() => window.confirm("この試合結果を削除しますか？") && onDelete(match.id)}>削除</button>}</div>{data.results.filter((result) => result.matchId === match.id).sort((left, right) => left.placement - right.placement).map((result) => <div className="match-result" key={result.id}><b>{result.placement}位</b><span>{playerName(data, result.participantId)}</span><small>{result.selectedChart || "選曲未記録"}</small><strong>{result.points} pt</strong></div>)}</article>)}</div></section>;
+type MatchesPanelProps = {
+  data: TournamentData;
+  canEdit: boolean;
+  onNew: () => void;
+  onEdit: (match: Match) => void;
+  onDelete: (matchId: number) => void;
+};
+
+function MatchesPanel({ data, canEdit, onNew, onEdit, onDelete }: MatchesPanelProps) {
+  return (
+    <section>
+      <div className="section-heading">
+        <div><p className="eyebrow">登録済みデータ</p><h2>試合結果</h2></div>
+        {canEdit && <button className="primary" onClick={onNew}>試合結果を追加</button>}
+      </div>
+      {data.matches.length === 0 && <Empty message="登録済みの試合結果はありません。" />}
+      <div className="match-list">
+        {[...data.matches].reverse().map((match) => (
+          <article key={match.id}>
+            <div className="match-title">
+              <strong>{stageLabels[match.stage]} 第{match.roundNumber}試合</strong>
+              {canEdit && (
+                <div className="match-actions">
+                  <button onClick={() => onEdit(match)}>編集</button>
+                  <button className="danger-button" onClick={() => window.confirm("この試合結果を削除しますか？") && onDelete(match.id)}>削除</button>
+                </div>
+              )}
+            </div>
+            {data.results
+              .filter((result) => result.matchId === match.id)
+              .sort((left, right) => left.placement - right.placement)
+              .map((result) => (
+                <div className="match-result" key={result.id}>
+                  <b>{result.placement}位</b>
+                  <span>{playerName(data, result.participantId)}</span>
+                  <small>{result.selectedChart || "選曲未記録"}</small>
+                  <strong>{result.points} pt</strong>
+                </div>
+              ))}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 type PlayersPanelProps = {
@@ -450,6 +537,7 @@ type ResultModalProps = {
   rows: DraftRow[];
   stage: Stage;
   busy: boolean;
+  editing: boolean;
   showChartInput: boolean;
   onStageChange: (stage: Stage) => void;
   onRowChange: (index: number, field: keyof DraftRow, value: string) => void;
@@ -457,12 +545,12 @@ type ResultModalProps = {
   onClose: () => void;
 };
 
-function ResultModal({ data, rows, stage, busy, showChartInput, onStageChange, onRowChange, onSubmit, onClose }: ResultModalProps) {
+function ResultModal({ data, rows, stage, busy, editing, showChartInput, onStageChange, onRowChange, onSubmit, onClose }: ResultModalProps) {
   return (
     <Modal onClose={onClose}>
       <form onSubmit={onSubmit}>
         <p className="dialog-kicker">試合データ</p>
-        <h2>試合結果を入力</h2>
+        <h2>{editing ? "試合結果を編集" : "試合結果を入力"}</h2>
         <label className="field">
           <span>試合区分</span>
           <select value={stage} onChange={(event) => onStageChange(event.target.value as Stage)}>
@@ -511,7 +599,7 @@ function ResultModal({ data, rows, stage, busy, showChartInput, onStageChange, o
         </div>
         <div className="modal-actions">
           <button type="button" onClick={onClose}>キャンセル</button>
-          <button className="primary" disabled={busy}>結果を保存</button>
+          <button className="primary" disabled={busy}>{editing ? "変更を保存" : "結果を保存"}</button>
         </div>
       </form>
     </Modal>
