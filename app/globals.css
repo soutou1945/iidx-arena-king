@@ -24,12 +24,13 @@
 * { box-sizing: border-box; }
 html { background: #f5f7fa; }
 body { margin: 0; min-width: 320px; background: #f5f7fa; font-size: 16px; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { min-height: 42px; padding: 9px 16px; border: 1px solid #c6ced9; border-radius: 8px; background: #fff; color: #263449; font-weight: 700; cursor: pointer; }
 button:hover:not(:disabled) { background: #f2f5f9; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #8db6f0; outline-offset: 2px; }
 button:disabled { opacity: .48; cursor: not-allowed; }
-input, select { min-height: 44px; width: 100%; padding: 9px 11px; border: 1px solid #bbc5d2; border-radius: 7px; background: #fff; color: var(--text); }
+input, select, textarea { min-height: 44px; width: 100%; padding: 9px 11px; border: 1px solid #bbc5d2; border-radius: 7px; background: #fff; color: var(--text); }
+textarea { resize: vertical; line-height: 1.5; }
 label > span, legend { color: #344156; font-size: 14px; font-weight: 700; }
 .primary { border-color: var(--primary); background: var(--primary); color: #fff; }
 .primary:hover:not(:disabled) { background: var(--primary-dark); }
@@ -174,6 +175,53 @@ label > span, legend { color: #344156; font-size: 14px; font-weight: 700; }
 .form-help { margin: -2px 0 12px; color: var(--muted); font-size: 14px; }
 .field-warning { color: var(--danger); }
 
+/* タッグ戦：チーム登録・順位・対戦表 */
+.tag-team-form { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; padding: 20px; border: 1px solid #cbd8e8; border-radius: 11px; background: #f7faff; }
+.tag-team-form label { display: flex; flex-direction: column; gap: 4px; }
+.tag-card-field { grid-column: 1 / -1; }
+.tag-team-form .form-message, .tag-team-form .form-actions { grid-column: 1 / -1; }
+.tag-team-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.tag-team-grid article { padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.tag-team-grid h3 { margin: 5px 0; font-size: 20px; }
+.tag-team-grid p { margin: 0 0 8px; color: #354257; }
+.tag-team-grid small { color: var(--muted); }
+.tag-team-grid .row-actions { margin-top: 14px; }
+.tag-seed { color: var(--primary); font-size: 12px; font-weight: 800; }
+
+.tag-ranking-table { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
+.tag-ranking-row { display: grid; grid-template-columns: 65px minmax(220px, 1fr) 80px repeat(3, 55px) 75px; align-items: center; gap: 9px; min-height: 62px; padding: 11px 18px; border-top: 1px solid #e5e9ef; }
+.tag-ranking-head { min-height: auto; border-top: 0; background: #edf1f6; color: #536174; font-size: 13px; font-weight: 700; }
+.tag-ranking-row strong { display: flex; flex-direction: column; }
+.tag-ranking-row strong small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.tag-ranking-row > b:last-child { color: var(--primary); font-size: 19px; }
+.tag-sudden-death { margin-top: 22px; padding: 20px; border: 2px solid #e3bd6d; border-radius: 11px; background: #fff9e8; }
+.tag-sudden-death h3 { margin: 0; }
+.tag-sudden-death p { color: #675015; }
+.tag-sudden-death label { display: grid; grid-template-columns: minmax(220px, 1fr) 260px; align-items: center; gap: 12px; margin-top: 9px; }
+
+.tag-bracket-actions { display: flex; gap: 9px; margin: -8px 0 20px; }
+.tag-match-sections { display: grid; gap: 28px; }
+.tag-match-sections > section > h3 { margin: 0 0 10px; color: var(--primary); font-size: 22px; }
+.tag-match-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.tag-match-grid article { display: flex; min-height: 160px; flex-direction: column; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.tag-match-grid article > div { display: flex; flex-direction: column; }
+.tag-match-grid small { color: var(--muted); }
+.tag-match-grid strong { margin-top: 5px; font-size: 17px; }
+.tag-match-grid strong i { margin: 0 5px; color: #9a4b22; font-size: 12px; font-style: normal; }
+.tag-match-grid button { align-self: flex-start; min-height: 34px; padding: 5px 10px; font-size: 12px; }
+.tag-result { color: var(--muted); font-size: 13px; }
+.tag-result.complete { color: #176640; font-weight: 800; }
+
+.tag-match-modal { width: min(940px, 100%); }
+.tag-battle-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 9px; }
+.tag-battle-fields legend, .tag-final-box legend { padding: 0 7px; color: var(--primary); font-size: 17px; }
+.tag-battle-team { padding: 12px; border-radius: 8px; background: #f5f7fa; }
+.tag-battle-team h4 { margin: 0 0 8px; }
+.tag-battle-team label, .tag-final-box label { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+.tag-battle-outcome { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; }
+.tag-final-box { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0; padding: 16px; border: 2px solid #e0b645; border-radius: 9px; background: #fffaf0; }
+.tag-sudden-winner { padding: 14px; border-radius: 8px; background: #fff3d7; }
+
 /* 配信に載せる静的な選手紹介画面。16:9画面内へA～Dの4枠を固定表示します。 */
 .call-board { height: 100vh; overflow: hidden; padding: 2vh 2vw; background: radial-gradient(circle at 50% 0, #1b4c9a, #09172f 72%); color: #fff; }
 .call-board-empty { display: grid; place-items: center; }
@@ -193,6 +241,7 @@ label > span, legend { color: #344156; font-size: 14px; font-weight: 700; }
   .tournament-switcher select { min-width: 0; }
   .hero { grid-template-columns: 1fr; gap: 24px; padding-top: 34px; }
   .finals-grid, .draw-rounds, .match-list, .rules-grid { grid-template-columns: 1fr; }
+  .tag-team-grid, .tag-match-grid { grid-template-columns: repeat(2, 1fr); }
   .stream-summary { grid-template-columns: repeat(2, 1fr); }
   .player-grid { grid-template-columns: repeat(2, 1fr); }
   .participant-entry-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -212,6 +261,11 @@ label > span, legend { color: #344156; font-size: 14px; font-weight: 700; }
   .tabs button { min-width: 94px; padding: 11px 10px; }
   .ranking-table { overflow-x: auto; }
   .ranking-head, .ranking-row { min-width: 650px; }
+  .tag-ranking-table { overflow-x: auto; }
+  .tag-ranking-row { min-width: 700px; }
+  .tag-team-form, .tag-team-grid, .tag-match-grid, .tag-battle-fields, .tag-final-box { grid-template-columns: 1fr; }
+  .tag-card-field, .tag-battle-outcome { grid-column: auto; }
+  .tag-sudden-death label { grid-template-columns: 1fr; }
   .stream-summary, .player-grid, .manual-player-fields, .manual-meta-fields, .result-row { grid-template-columns: 1fr; }
   .entry-form { align-items: stretch; flex-direction: column; }
   .modal { padding: 26px 18px; }

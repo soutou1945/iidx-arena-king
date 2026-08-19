@@ -1,5 +1,8 @@
+import type { TagTournamentData } from "./types/tagTournament";
+
 /** 大会で使用する試合区分です。 */
 export type Stage = "preliminary" | "king" | "middle" | "reverse";
+export type TournamentFormat = "individual" | "tag";
 
 /** 抽選された予選1試合。配信対象は4人のうち2人です。 */
 export type DrawMatch = {
@@ -16,7 +19,9 @@ export type Tournament = {
   eventDate: string;
   createdAt: string;
   isArchived: boolean;
+  format: TournamentFormat;
   drawSchedule: DrawMatch[];
+  tagData: TagTournamentData | null;
   calledMatchNumber: number | null;
 };
 
@@ -61,12 +66,13 @@ export type ResultInput = {
 
 /** 画面からデータ操作層へ渡す更新内容です。 */
 export type MutationPayload = {
-  action: "createTournament" | "addParticipant" | "updateParticipant" | "deleteParticipant" | "addMatch" | "updateMatch" | "deleteMatch" | "resetTournament" | "saveDraw" | "callMatch";
+  action: "createTournament" | "addParticipant" | "updateParticipant" | "deleteParticipant" | "addMatch" | "updateMatch" | "deleteMatch" | "resetTournament" | "saveDraw" | "saveTagTournament" | "callMatch";
   name?: string; participantId?: number; matchId?: number; tournamentName?: string;
   title?: string; imageFile?: File; removeImage?: boolean;
   eventDate?: string; stage?: Stage; results?: ResultInput[];
-  isArchived?: boolean;
+  isArchived?: boolean; tournamentFormat?: TournamentFormat;
   drawSchedule?: DrawMatch[]; calledMatchNumber?: number | null;
+  tagData?: TagTournamentData;
 };
 
 export const emptyTournamentData: TournamentData = { tournaments: [], tournament: null, participants: [], matches: [], results: [] };

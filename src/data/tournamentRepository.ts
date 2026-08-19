@@ -1,4 +1,5 @@
 import { requireSupabase } from "../lib/supabase";
+import { createEmptyTagTournamentData, type TagTournamentData } from "../types/tagTournament";
 import type { DrawMatch, Match, MutationPayload, Participant, Result, Tournament, TournamentData } from "../types";
 
 type TournamentRow = {
@@ -25,14 +26,46 @@ function toDrawSchedule(value: unknown): DrawMatch[] {
   });
 }
 
+/** 既存の配列形式は個人戦、新しいオブジェクト形式はタッグ戦として読み分けます。 */
+function toTournamentFormatData(value:unknown):{
+  format:Tournament["format"];
+  drawSchedule:DrawMatch[];
+  tagData:TagTournamentData|null;
+}{
+  if(Array.isArray(value)) return {format:"individual",drawSchedule:toDrawSchedule(value),tagData:null};
+  if(value && typeof value==="object"){
+    const stored=value as {format?:unknown;tagData?:unknown};
+    if(stored.format==="tag" && stored.tagData && typeof stored.tagData==="object"){
+      const tagData=stored.tagData as Partial<TagTournamentData>;
+      if(Array.isArray(tagData.teams) && Array.isArray(tagData.matches) && Array.isArray(tagData.preliminaryTieBreaks)){
+        return {
+          format:"tag",
+          drawSchedule:[],
+          tagData:{
+            version:1,
+            teams:tagData.teams,
+            matches:tagData.matches,
+            preliminaryTieBreaks:tagData.preliminaryTieBreaks,
+            calledMatchId:typeof tagData.calledMatchId==="string" ? tagData.calledMatchId : "",
+          },
+        };
+      }
+    }
+  }
+  return {format:"individual",drawSchedule:[],tagData:null};
+}
+
 function toTournament(row:TournamentRow):Tournament {
+  const formatData=toTournamentFormatData(row.draw_schedule);
   return {
     id: row.id,
     name: row.name,
     eventDate: row.event_date ?? "",
     createdAt: row.created_at,
     isArchived: row.is_archived ?? false,
-    drawSchedule: toDrawSchedule(row.draw_schedule),
+    format:formatData.format,
+    drawSchedule:formatData.drawSchedule,
+    tagData:formatData.tagData,
     calledMatchNumber: row.called_match_number,
   };
 }
@@ -135,10 +168,14 @@ export async function mutateTournament(payload:MutationPayload,tournamentId?:num
   if(payload.action==="createTournament"){
     const name=payload.tournamentName?.trim() ?? ""; if(!name) throw new Error("大会名を入力してください。");
     // 過去回として作成した大会は、最新IDでもアーカイブ扱いにできるよう明示的に保存します。
+    const tournamentFormat=payload.tournamentFormat ?? "individual";
+    let storedDrawData:unknown=[];
+    if(tournamentFormat==="tag") storedDrawData={format:"tag",tagData:createEmptyTagTournamentData()};
     const response=await client.from("tournaments").insert({
       name,
       event_date:payload.eventDate || null,
       is_archived:payload.isArchived ?? false,
+      draw_schedule:storedDrawData,
     }).select("id").single();
     assertSuccess(response.error); return loadTournament((response.data as {id:number}).id);
   }
@@ -225,6 +262,13 @@ export async function mutateTournament(payload:MutationPayload,tournamentId?:num
     const response=await client.from("tournaments").update({
       draw_schedule:payload.drawSchedule,
       called_match_number:calledMatchNumber,
+    }).eq("id",tournamentId);
+    assertSuccess(response.error);
+  }else if(payload.action==="saveTagTournament"){
+    if(!payload.tagData) throw new Error("タッグ戦データがありません。");
+    // 既存JSON列へまとめて保存するため、DBのテーブル・列追加は不要です。
+    const response=await client.from("tournaments").update({
+      draw_schedule:{format:"tag",tagData:payload.tagData},
     }).eq("id",tournamentId);
     assertSuccess(response.error);
   }else if(payload.action==="callMatch"){
